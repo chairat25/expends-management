@@ -1,0 +1,80 @@
+@import "tailwindcss";
+
+:root {
+  color-scheme: light;
+  --bg: #f3f4f6;
+  --surface: #ffffff;
+  --surface-2: #f7f8fa;
+  --border: #d1d5db;
+  --text: #15171c;
+  --muted: #6b7280;
+  --accent: #2563eb;
+  --income: #0f9d63;
+  --income-soft: #e6f6ef;
+  --expense: #dc4b3e;
+  --expense-soft: #fdeceb;
+  --shadow: 0 1px 3px rgb(16 24 40 / 0.08), 0 8px 24px rgb(16 24 40 / 0.08);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --bg: #0c0e12;
+    --surface: #161920;
+    --surface-2: #1c2029;
+    --border: #2a2f3a;
+    --text: #e8eaee;
+    --muted: #969ca8;
+    --accent: #6091ff;
+    --income: #35c98d;
+    --income-soft: #122e24;
+    --expense: #ff7d70;
+    --expense-soft: #34211f;
+    --shadow: 0 1px 2px rgb(0 0 0 / 0.3), 0 6px 20px rgb(0 0 0 / 0.28);
+  }
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-border: var(--border);
+  --color-text: var(--text);
+  --color-muted: var(--muted);
+  --color-accent: var(--accent);
+  --color-income: var(--income);
+  --color-income-soft: var(--income-soft);
+  --color-expense: var(--expense);
+  --color-expense-soft: var(--expense-soft);
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  -webkit-tap-highlight-color: transparent;
+}
+
+.tnum {
+  font-variant-numeric: tabular-nums;
+}
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  box-shadow: var(--shadow);
+}
+
+@keyframes pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.pop-in {
+  animation: pop-in 0.18s ease-out;
+}
