@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { cookies } from "next/headers";
 import { getUser } from "./supabase/server";
 import { BUDGET_MODES, CATEGORIES } from "./shared";
 
@@ -73,13 +74,24 @@ export function badRequest(message: unknown) {
 }
 
 export function unauthorized() {
-  return Response.json({ error: "กรุณาเข้าสู่ระบบ" }, { status: 401 });
+  return Response.json({ error: "กรุณาเข้าสู่ระบบผู้ดูแลระบบ" }, { status: 401 });
 }
 
 export async function requireUserId(): Promise<string | null> {
   const user = await getUser();
   if (user?.id) return user.id;
-  // พัฒนา/ทดสอบบนเครื่อง local: ใช้ ID ค่าเริ่มต้นเพื่ออ่าน/เขียนข้อมูลได้โดยไม่ต้องล็อกอินใหม่ทุกครั้ง
+
+  try {
+    const store = await cookies();
+    const adminSession = store.get("admin_session")?.value;
+    if (adminSession === "authenticated_admin") {
+      return "95ec1a71-84ba-4d92-938a-36ee54556a31"; // Default Admin ID
+    }
+  } catch {
+    // Ignore error if not in request context
+  }
+
+  // พัฒนา/ทดสอบบนเครื่อง local: ใช้ ID ค่าเริ่มต้น
   if (process.env.NODE_ENV === "development") {
     return "00000000-0000-0000-0000-000000000000";
   }

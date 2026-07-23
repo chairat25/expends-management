@@ -14,6 +14,11 @@ import {
   Users,
   UserCheck,
   ShieldAlert,
+  Lock,
+  LogOut,
+  Sparkles,
+  KeyRound,
+  Mail,
 } from "lucide-react";
 import type { AppCategory, AppMenu, UserMenuPreference } from "@/db/schema";
 import { createClient } from "@/lib/supabase/client";
@@ -38,6 +43,13 @@ export default function AdminView() {
   const [error, setError] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
 
+  // Auth States
+  const [isAuthRequired, setIsAuthRequired] = useState(false);
+  const [loginEmail, setLoginEmail] = useState("Pondkub1324@gmail.com");
+  const [loginPassword, setLoginPassword] = useState("");
+  const [loginLoading, setLoginLoading] = useState(false);
+  const [loginError, setLoginError] = useState<string | null>(null);
+
   const [categories, setCategories] = useState<AppCategory[]>([]);
   const [menus, setMenus] = useState<AppMenu[]>([]);
   const [users, setUsers] = useState<UserItem[]>([]);
@@ -51,12 +63,21 @@ export default function AdminView() {
 
   async function loadData() {
     setLoading(true);
+    setError(null);
     try {
       const [resCat, resMenu, resUsers] = await Promise.all([
         fetch("/api/admin/categories", { cache: "no-store" }),
         fetch("/api/admin/menus", { cache: "no-store" }),
         fetch("/api/admin/users", { cache: "no-store" }),
       ]);
+
+      if (resCat.status === 401 || resMenu.status === 401 || resUsers.status === 401) {
+        setIsAuthRequired(true);
+        setLoading(false);
+        return;
+      }
+
+      setIsAuthRequired(false);
 
       if (resCat.ok) {
         const d = await resCat.json();
@@ -80,6 +101,50 @@ export default function AdminView() {
     } finally {
       setLoading(false);
     }
+  }
+
+  async function handleLogin(e: React.FormEvent) {
+    e.preventDefault();
+    if (!loginEmail.trim() || !loginPassword) {
+      setLoginError("กรุณากรอกอีเมลและรหัสผ่าน");
+      return;
+    }
+
+    setLoginLoading(true);
+    setLoginError(null);
+
+    try {
+      const res = await fetch("/api/admin/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          email: loginEmail.trim(),
+          password: loginPassword,
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || "เข้าสู่ระบบไม่สำเร็จ");
+      }
+
+      setIsAuthRequired(false);
+      setSuccessMsg("เข้าสู่ระบบผู้ดูแลระบบสำเร็จ!");
+      void loadData();
+    } catch (err: any) {
+      setLoginError(err.message || "อีเมลหรือรหัสผ่านผู้ดูแลระบบไม่ถูกต้อง");
+    } finally {
+      setLoginLoading(false);
+    }
+  }
+
+  async function handleLogout() {
+    try {
+      await fetch("/api/admin/logout", { method: "POST" });
+    } catch {
+      // ignore
+    }
+    setIsAuthRequired(true);
   }
 
   async function loadUserPrefs(userId: string) {
@@ -279,16 +344,91 @@ export default function AdminView() {
     }
   }
 
+  if (isAuthRequired) {
+    return (
+      <div className="mx-auto w-full max-w-md space-y-4 pop-in pt-6">
+        <div className="card space-y-4 p-6 border-indigo-500/30 bg-gradient-to-br from-indigo-900/30 via-surface to-surface">
+          <div className="text-center space-y-2">
+            <div className="mx-auto flex size-14 items-center justify-center rounded-2xl bg-indigo-500/20 text-indigo-400 border border-indigo-500/30 shadow-lg shadow-indigo-500/10">
+              <Lock size={28} />
+            </div>
+            <h2 className="text-lg font-bold text-foreground">
+              เข้าสู่ระบบผู้ดูแลระบบ (Admin Portal)
+            </h2>
+            <p className="text-xs text-muted max-w-xs mx-auto">
+              ระบบหลังบ้านสำหรับจัดการผู้ใช้งาน สิทธิ์เมนู และหมวดหมู่การเงิน
+            </p>
+          </div>
+
+          {loginError && (
+            <div className="rounded-xl bg-rose-500/10 border border-rose-500/30 p-3 text-xs text-rose-400 font-medium text-center">
+              {loginError}
+            </div>
+          )}
+
+          <form onSubmit={handleLogin} className="space-y-3.5 pt-1">
+            <div>
+              <label className="text-[11px] font-semibold text-muted flex items-center gap-1">
+                <Mail size={13} className="text-indigo-400" /> อีเมลผู้ดูแลระบบ (Admin Email)
+              </label>
+              <input
+                type="email"
+                required
+                value={loginEmail}
+                onChange={(e) => setLoginEmail(e.target.value)}
+                placeholder="Pondkub1324@gmail.com"
+                className="mt-1 w-full rounded-xl border border-border bg-surface-2 px-3.5 py-2.5 text-xs font-semibold text-foreground focus:border-indigo-500 focus:outline-none"
+              />
+            </div>
+
+            <div>
+              <label className="text-[11px] font-semibold text-muted flex items-center gap-1">
+                <KeyRound size={13} className="text-indigo-400" /> รหัสผ่าน (Admin Password)
+              </label>
+              <input
+                type="password"
+                required
+                value={loginPassword}
+                onChange={(e) => setLoginPassword(e.target.value)}
+                placeholder="••••••••••••"
+                className="mt-1 w-full rounded-xl border border-border bg-surface-2 px-3.5 py-2.5 text-xs font-semibold text-foreground focus:border-indigo-500 focus:outline-none"
+              />
+            </div>
+
+            <button
+              type="submit"
+              disabled={loginLoading}
+              className="flex w-full items-center justify-center gap-2 rounded-xl bg-indigo-600 px-4 py-3 text-xs font-bold text-white shadow-lg shadow-indigo-600/30 transition hover:bg-indigo-500 active:scale-95 disabled:opacity-50"
+            >
+              <Sparkles size={16} />
+              {loginLoading ? "กำลังตรวจสอบข้อมูล..." : "เข้าสู่ระบบผู้ดูแลระบบ"}
+            </button>
+          </form>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-3 pop-in">
-      <div className="card p-4 bg-accent/10 border-b border-border/50">
+      <div className="card p-4 bg-accent/10 border-b border-border/50 flex items-center justify-between">
         <div className="flex items-center gap-2">
           <Settings className="text-accent" size={20} />
-          <h2 className="font-bold text-base">Expense Tracking Management Dashboard</h2>
+          <div>
+            <h2 className="font-bold text-base">Expense Tracking Management Dashboard</h2>
+            <p className="text-[11px] text-muted">
+              แดชบอร์ดหลังบ้าน สำหรับจัดการผู้ใช้ สิทธิ์การเห็นเมนู และหมวดหมู่ระบบ
+            </p>
+          </div>
         </div>
-        <p className="mt-1 text-xs text-muted">
-          แดชบอร์ดหลังบ้าน สำหรับจัดการผู้ใช้ สิทธิ์การเห็นเมนูรายบุคคล และสลับเปิด-ปิดหมวดหมู่ระบบ
-        </p>
+        <button
+          type="button"
+          onClick={handleLogout}
+          className="flex items-center gap-1 rounded-xl bg-rose-500/15 border border-rose-500/30 px-3 py-1.5 text-xs font-semibold text-rose-400 hover:bg-rose-500/25 active:scale-95 transition"
+        >
+          <LogOut size={14} />
+          <span>ออกจากระบบ</span>
+        </button>
       </div>
 
       {error && (
