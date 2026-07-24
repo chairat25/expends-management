@@ -11,6 +11,7 @@ import {
   pgEnum,
   integer,
   boolean,
+  jsonb,
 } from "drizzle-orm/pg-core";
 
 export const txTypeEnum = pgEnum("tx_type", ["income", "expense"]);
@@ -151,6 +152,29 @@ export const userMenuPreferences = pgTable(
   },
   (t) => [uniqueIndex("user_menu_prefs_user_key_uq").on(t.userId, t.menuKey)],
 );
+
+export const userNotifications = pgTable("user_notifications", {
+  id: serial("id").primaryKey(),
+  userId: uuid("user_id").notNull(),
+  title: text("title").notNull(),
+  message: text("message").notNull(),
+  type: text("type").notNull().default("system"),
+  link: text("link").notNull().default(""),
+  isRead: boolean("is_read").notNull().default(false),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+export const pushSubscriptions = pgTable("push_subscriptions", {
+  id: serial("id").primaryKey(),
+  userId: uuid("user_id").notNull(),
+  endpoint: text("endpoint").notNull(),
+  keys: jsonb("keys").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
 
 export type Transaction = typeof transactions.$inferSelect;
 export type Month = typeof months.$inferSelect;

@@ -19,12 +19,14 @@ import {
   Sparkles,
   KeyRound,
   Mail,
+  Bell,
+  Send,
 } from "lucide-react";
 import type { AppCategory, AppMenu, UserMenuPreference } from "@/db/schema";
 import { createClient } from "@/lib/supabase/client";
 import { AdminSkeletonLoading } from "@/components/Skeleton";
 
-type AdminTab = "categories" | "menus" | "users";
+type AdminTab = "categories" | "menus" | "users" | "push";
 
 type UserItem = {
   id: string;
@@ -61,6 +63,54 @@ export default function AdminView() {
   const [newCatIcon, setNewCatIcon] = useState("📦");
   const [newCatParentId, setNewCatParentId] = useState<string>("root");
   const [newCatType, setNewCatType] = useState<"expense" | "income" | "both">("expense");
+
+  // Push Notification States
+  const [pushTargetUserId, setPushTargetUserId] = useState<string>("");
+  const [pushTitle, setPushTitle] = useState("🔔 แจ้งเตือนทดสอบระบบ Admin");
+  const [pushBody, setPushBody] = useState("สวัสดีครับ! นี่คือข้อความยิงทดสอบระบบ Push Notification เข้ามือถือ");
+  const [pushSending, setPushSending] = useState(false);
+  const [pushResultMsg, setPushResultMsg] = useState<{ success: boolean; text: string } | null>(null);
+
+  async function handleSendAdminPush(e: React.FormEvent) {
+    e.preventDefault();
+    if (!pushTargetUserId || !pushTitle.trim() || !pushBody.trim()) {
+      setError("กรุณากรกข้อมูลให้ครบถ้วน");
+      return;
+    }
+    setPushSending(true);
+    setPushResultMsg(null);
+    try {
+      const res = await fetch("/api/admin/push/send", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          userId: pushTargetUserId,
+          title: pushTitle.trim(),
+          body: pushBody.trim(),
+        }),
+      });
+
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setPushResultMsg({
+          success: true,
+          text: `ยิงสัญญาณ Push Notification สำเร็จ! (${data.pushResult?.sentCount ?? 1} อุปกรณ์ได้รับสัญญาณ)`,
+        });
+      } else {
+        setPushResultMsg({
+          success: false,
+          text: data.error || "เกิดข้อผิดพลาดในการยิงแจ้งเตือน",
+        });
+      }
+    } catch (err: any) {
+      setPushResultMsg({
+        success: false,
+        text: err.message || "เกิดข้อผิดพลาดในการยิงแจ้งเตือน",
+      });
+    } finally {
+      setPushSending(false);
+    }
+  }
 
   async function loadData() {
     setLoading(true);
@@ -485,7 +535,18 @@ export default function AdminView() {
               : "text-muted hover:text-foreground",
           )}
         >
-          <ListFilter size={14} /> โครงสร้างเมนู ({menus.length})
+          <ListFilter size={14} /> เมนู ({menus.length})
+        </button>
+        <button
+          onClick={() => setTab("push")}
+          className={clsx(
+            "flex flex-1 items-center justify-center gap-1.5 py-2 font-medium rounded-lg transition",
+            tab === "push"
+              ? "bg-indigo-600 text-white font-bold shadow-sm"
+              : "text-indigo-400 hover:text-foreground font-semibold",
+          )}
+        >
+          <Bell size={14} /> 🔔 ยิง Push Noti
         </button>
       </div>
 
@@ -846,6 +907,92 @@ export default function AdminView() {
               </div>
             ))}
           </div>
+        </div>
+      )}
+
+      {/* Push Notification Tester Panel */}
+      {tab === "push" && (
+        <div className="card space-y-4 p-5 border-indigo-500/30 bg-gradient-to-br from-indigo-900/20 via-surface to-surface pop-in">
+          <div className="flex items-center gap-2 border-b border-border/80 pb-3">
+            <Bell className="text-indigo-400" size={20} />
+            <div>
+              <h3 className="text-sm font-bold text-foreground">
+                ทดสอบยิงการแจ้งเตือน (Admin Web Push Notification Tester)
+              </h3>
+              <p className="text-[11px] text-muted">
+                เลือกสมาชิกที่ต้องการทดสอบเพื่อยิงข้อความแจ้งเตือนเด้งบน Lock Screen / หน้าจอมือถือ
+              </p>
+            </div>
+          </div>
+
+          <form onSubmit={handleSendAdminPush} className="space-y-4">
+            <div>
+              <label className="text-[11px] font-semibold text-muted">
+                เลือกสมาชิกผู้รับ (Select Target User)
+              </label>
+              <select
+                value={pushTargetUserId}
+                onChange={(e) => setPushTargetUserId(e.target.value)}
+                className="mt-1 w-full rounded-xl border border-border bg-surface-2 px-3.5 py-2.5 text-xs font-semibold text-foreground outline-none focus:border-indigo-500"
+              >
+                <option value="">-- เลือกสมาชิกในระบบ ({users.length} คน) --</option>
+                {users.map((u) => (
+                  <option key={u.id} value={u.id}>
+                    👤 {u.email} ({u.id.slice(0, 8)}...)
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="text-[11px] font-semibold text-muted">
+                หัวข้อการแจ้งเตือน (Notification Title)
+              </label>
+              <input
+                type="text"
+                value={pushTitle}
+                onChange={(e) => setPushTitle(e.target.value)}
+                placeholder="🔔 แจ้งเตือนทดสอบระบบ Admin"
+                className="mt-1 w-full rounded-xl border border-border bg-surface-2 px-3.5 py-2.5 text-xs text-foreground outline-none focus:border-indigo-500 font-medium"
+              />
+            </div>
+
+            <div>
+              <label className="text-[11px] font-semibold text-muted">
+                เนื้อหาข้อความ (Notification Message)
+              </label>
+              <textarea
+                rows={3}
+                value={pushBody}
+                onChange={(e) => setPushBody(e.target.value)}
+                placeholder="สวัสดีครับ! นี่คือข้อความยิงทดสอบระบบ Push Notification เข้ามือถือ"
+                className="mt-1 w-full rounded-xl border border-border bg-surface-2 px-3.5 py-2.5 text-xs text-foreground outline-none focus:border-indigo-500 font-medium leading-relaxed"
+              />
+            </div>
+
+            {pushResultMsg && (
+              <div
+                className={clsx(
+                  "p-3.5 rounded-xl border text-xs font-medium flex items-center gap-2",
+                  pushResultMsg.success
+                    ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-400"
+                    : "bg-rose-500/10 border-rose-500/30 text-rose-400",
+                )}
+              >
+                <Sparkles size={16} />
+                <span>{pushResultMsg.text}</span>
+              </div>
+            )}
+
+            <button
+              type="submit"
+              disabled={pushSending || !pushTargetUserId}
+              className="flex w-full items-center justify-center gap-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 px-4 py-3 text-xs font-bold text-white shadow-lg shadow-indigo-600/30 transition active:scale-95 disabled:opacity-50"
+            >
+              <Send size={15} />
+              <span>{pushSending ? "กำลังยิงสัญญาณ Push..." : "🚀 ยิง Push Notification เข้าเครื่องผู้ใช้"}</span>
+            </button>
+          </form>
         </div>
       )}
     </div>
