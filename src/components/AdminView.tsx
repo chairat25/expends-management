@@ -92,10 +92,19 @@ export default function AdminView() {
 
       const data = await res.json();
       if (res.ok && data.success) {
-        setPushResultMsg({
-          success: true,
-          text: `ยิงสัญญาณ Push Notification สำเร็จ! (${data.pushResult?.sentCount ?? 1} อุปกรณ์ได้รับสัญญาณ)`,
-        });
+        const pushRes = data.pushResult;
+        if (pushRes && pushRes.sentCount > 0) {
+          setPushResultMsg({
+            success: true,
+            text: `ยิงสัญญาณ Push Notification สำเร็จ! (${pushRes.sentCount} จาก ${pushRes.totalDeviceCount} อุปกรณ์ได้รับสัญญาณ)`,
+          });
+        } else {
+          const errDetail = pushRes?.errors?.[0]?.error || "Token อุปกรณ์อาจหมดอายุ กรุณากดปุ่มเปิดรับแจ้งเตือนบนมือถือใหม่อีกครั้ง";
+          setPushResultMsg({
+            success: false,
+            text: `ยังส่งไม่ถึงอุปกรณ์ (${pushRes?.totalDeviceCount ?? 0} โทเค็น): ${errDetail}`,
+          });
+        }
       } else {
         setPushResultMsg({
           success: false,
