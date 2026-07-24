@@ -90,7 +90,10 @@ export async function sendWebPushNotification(
           error: errDetail,
         });
 
-        if (err.statusCode === 410 || err.statusCode === 404) {
+        const isVapidMismatch =
+          err.statusCode === 400 && String(err.body || "").includes("VapidPkHashMismatch");
+
+        if (err.statusCode === 410 || err.statusCode === 404 || isVapidMismatch) {
           try {
             await db
               .delete(pushSubscriptions)
