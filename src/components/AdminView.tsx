@@ -22,6 +22,7 @@ import {
 } from "lucide-react";
 import type { AppCategory, AppMenu, UserMenuPreference } from "@/db/schema";
 import { createClient } from "@/lib/supabase/client";
+import { AdminSkeletonLoading } from "@/components/Skeleton";
 
 type AdminTab = "categories" | "menus" | "users";
 
@@ -407,6 +408,10 @@ export default function AdminView() {
         </div>
       </div>
     );
+  }
+
+  if (loading) {
+    return <AdminSkeletonLoading />;
   }
 
   return (

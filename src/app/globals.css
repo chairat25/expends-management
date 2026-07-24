@@ -78,3 +78,18 @@ body {
 .pop-in {
   animation: pop-in 0.18s ease-out;
 }
+
+@keyframes skeleton-pulse {
+  0%, 100% {
+    opacity: 0.4;
+  }
+  50% {
+    opacity: 0.8;
+  }
+}
+
+.skeleton {
+  animation: skeleton-pulse 1.5s ease-in-out infinite;
+  background-color: var(--surface-2);
+  border-radius: 12px;
+}
