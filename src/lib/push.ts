@@ -66,6 +66,8 @@ export async function sendWebPushNotification(
     });
 
     let sentCount = 0;
+    let lastError = "";
+
     const sendPromises = subs.map(async (subRecord) => {
       try {
         const keysObj = (subRecord.keys as { p256dh?: string; auth?: string }) || {};
@@ -80,6 +82,9 @@ export async function sendWebPushNotification(
         await webpush.sendNotification(pushSubscription, pushPayload);
         sentCount++;
       } catch (err: any) {
+        console.error("WebPush error for sub ID:", subRecord.id, err);
+        lastError = err.body || err.message || String(err);
+
         if (err.statusCode === 410 || err.statusCode === 404) {
           try {
             await db
@@ -93,7 +98,16 @@ export async function sendWebPushNotification(
     });
 
     await Promise.all(sendPromises);
-    return { success: sentCount > 0, sentCount, totalDeviceCount: subs.length };
+
+    if (sentCount === 0) {
+      return {
+        success: false,
+        reason: `ไม่สามารถส่งถึงอุปกรณ์ได้ (ข้อผิดพลาดจาก Push Gateway: ${lastError || "Token หมดอายุ"})`,
+        totalDeviceCount: subs.length,
+      };
+    }
+
+    return { success: true, sentCount, totalDeviceCount: subs.length };
   } catch (err: any) {
     console.error("Error sending Web Push from Admin", err);
     return { success: false, error: err.message };
