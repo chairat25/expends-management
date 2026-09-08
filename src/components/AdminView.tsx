@@ -1,32 +1,40 @@
 "use client";
 
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useState, useMemo, useCallback } from "react";
 import clsx from "clsx";
 import {
-  Settings,
+  BarChart3,
+  Receipt,
+  Wallet,
   FolderTree,
-  ListFilter,
-  Plus,
-  Power,
-  ArrowRightLeft,
-  Eye,
-  EyeOff,
   Users,
-  UserCheck,
-  ShieldAlert,
+  Bell,
+  Plus,
+  Trash2,
   Lock,
   LogOut,
   Sparkles,
   KeyRound,
   Mail,
-  Bell,
   Send,
+  Loader2,
+  Calendar,
+  Sun,
+  Layers,
+  ArrowUpDown,
+  Search,
+  CheckCircle2,
+  AlertCircle,
+  TrendingDown,
+  TrendingUp,
+  X,
 } from "lucide-react";
 import type { AppCategory, AppMenu, UserMenuPreference } from "@/db/schema";
 import { createClient } from "@/lib/supabase/client";
 import { AdminSkeletonLoading } from "@/components/Skeleton";
+import { formatBaht, thisMonthKey, todayKey, CATEGORY_ICON, CATEGORY_LABEL, formatDayTH, formatTimeTH } from "@/lib/shared";
 
-type AdminTab = "categories" | "menus" | "users" | "push";
+type AdminTab = "analytics" | "transactions" | "budgets" | "categories" | "users" | "push";
 
 type UserItem = {
   id: string;
@@ -34,14 +42,35 @@ type UserItem = {
   createdAt: string;
 };
 
+type AnalyticsData = {
+  ym: string;
+  totalExpense: number;
+  totalIncome: number;
+  netSavings: number;
+  transactionCount: number;
+  categoryBreakdown: { category: string; count: number; total: number; percentage: number }[];
+  dailyTrend: { date: string; expense: number; income: number }[];
+};
+
+type TransactionItem = {
+  id: number;
+  userId: string;
+  date: string;
+  spentAt: string;
+  type: "income" | "expense";
+  amount: number;
+  category: string;
+  note: string;
+};
+
 const PRESET_EMOJIS = [
-  "🍚", "🥤", "🚕", "🧾", "🛍️", "🎬", "📦", "🚗", "🏠", "💊",
+  "🍚", "🧋", "🚕", "🧾", "🛍️", "🎬", "📦", "🚗", "🏠", "💊",
   "📌", "🛠️", "💳", "🐶", "💻", "✈️", "📱", "📑", "⚙️", "💰",
   "🎁", "🏥", "⭐️", "🍔", "☕️", "🎮", "⚽️", "🎓"
 ];
 
 export default function AdminView() {
-  const [tab, setTab] = useState<AdminTab>("users");
+  const [tab, setTab] = useState<AdminTab>("analytics");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
@@ -53,230 +82,205 @@ export default function AdminView() {
   const [loginLoading, setLoginLoading] = useState(false);
   const [loginError, setLoginError] = useState<string | null>(null);
 
-  const [categories, setCategories] = useState<AppCategory[]>([]);
-  const [menus, setMenus] = useState<AppMenu[]>([]);
+  // Common Data
   const [users, setUsers] = useState<UserItem[]>([]);
   const [selectedUser, setSelectedUser] = useState<UserItem | null>(null);
-  const [targetUserPrefs, setTargetUserPrefs] = useState<Record<string, boolean>>({});
+  const [selectedYm, setSelectedYm] = useState(thisMonthKey());
 
+  // Analytics State
+  const [analytics, setAnalytics] = useState<AnalyticsData | null>(null);
+  const [analyticsLoading, setAnalyticsLoading] = useState(false);
+
+  // Transactions State
+  const [transactions, setTransactions] = useState<TransactionItem[]>([]);
+  const [txFilterCategory, setTxFilterCategory] = useState<string>("");
+  const [txFilterType, setTxFilterType] = useState<string>("");
+  const [txSearch, setTxSearch] = useState<string>("");
+
+  // Budgets State
+  const [budgetMonthlySalary, setBudgetMonthlySalary] = useState<string>("15000");
+  const [budgetDaily, setBudgetDaily] = useState<string>("500");
+  const [budgetDailyDate, setBudgetDailyDate] = useState<string>(todayKey());
+  const [envelopes, setEnvelopes] = useState<{ weekIndex: number; startDate: string; endDate: string; label: string; budgetAmount: number }[]>([]);
+  const [savingBudget, setSavingBudget] = useState(false);
+
+  // Categories & Menus State
+  const [categories, setCategories] = useState<AppCategory[]>([]);
   const [newCatName, setNewCatName] = useState("");
   const [newCatIcon, setNewCatIcon] = useState("📦");
-  const [newCatParentId, setNewCatParentId] = useState<string>("root");
   const [newCatType, setNewCatType] = useState<"expense" | "income" | "both">("expense");
 
-  // Push Notification States
+  // Push State
   const [pushTargetUserId, setPushTargetUserId] = useState<string>("");
-  const [pushTitle, setPushTitle] = useState("🔔 แจ้งเตือนทดสอบระบบ Admin");
-  const [pushBody, setPushBody] = useState("สวัสดีครับ! นี่คือข้อความยิงทดสอบระบบ Push Notification เข้ามือถือ");
+  const [pushTitle, setPushTitle] = useState("🔔 แจ้งเตือนจาก Expense Dashboard");
+  const [pushBody, setPushBody] = useState("สวัสดีครับ! ยอดงบประมาณของคุณได้รับการอัปเดตแล้ว");
   const [pushSending, setPushSending] = useState(false);
   const [pushResultMsg, setPushResultMsg] = useState<{ success: boolean; text: string } | null>(null);
 
-  async function handleSendAdminPush(e: React.FormEvent) {
-    e.preventDefault();
-    if (!pushTargetUserId || !pushTitle.trim() || !pushBody.trim()) {
-      setError("กรุณากรกข้อมูลให้ครบถ้วน");
-      return;
-    }
-    setPushSending(true);
-    setPushResultMsg(null);
-    try {
-      const res = await fetch("/api/admin/push/send", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          userId: pushTargetUserId,
-          title: pushTitle.trim(),
-          body: pushBody.trim(),
-        }),
-      });
-
-      const data = await res.json();
-      if (res.ok && data.success) {
-        const pushRes = data.pushResult;
-        if (pushRes && pushRes.sentCount > 0) {
-          setPushResultMsg({
-            success: true,
-            text: `ยิงสัญญาณ Push Notification สำเร็จ! (${pushRes.sentCount} จาก ${pushRes.totalDeviceCount} อุปกรณ์ได้รับสัญญาณ)`,
-          });
-        } else {
-          const errDetail = pushRes?.errors?.[0]?.error || "Token อุปกรณ์อาจหมดอายุ กรุณากดปุ่มเปิดรับแจ้งเตือนบนมือถือใหม่อีกครั้ง";
-          setPushResultMsg({
-            success: false,
-            text: `ยังส่งไม่ถึงอุปกรณ์ (${pushRes?.totalDeviceCount ?? 0} โทเค็น): ${errDetail}`,
-          });
-        }
-      } else {
-        setPushResultMsg({
-          success: false,
-          text: data.error || "เกิดข้อผิดพลาดในการยิงแจ้งเตือน",
-        });
-      }
-    } catch (err: any) {
-      setPushResultMsg({
-        success: false,
-        text: err.message || "เกิดข้อผิดพลาดในการยิงแจ้งเตือน",
-      });
-    } finally {
-      setPushSending(false);
-    }
-  }
-
-  async function loadData() {
+  // Load Users & Categories
+  const loadInitialData = useCallback(async () => {
     setLoading(true);
-    setError(null);
     try {
-      const [resCat, resMenu, resUsers] = await Promise.all([
-        fetch("/api/admin/categories", { cache: "no-store" }),
-        fetch("/api/admin/menus", { cache: "no-store" }),
-        fetch("/api/admin/users", { cache: "no-store" }),
+      const [usersRes, catRes] = await Promise.all([
+        fetch("/api/admin/users"),
+        fetch("/api/admin/categories"),
       ]);
 
-      if (resCat.status === 401 || resMenu.status === 401 || resUsers.status === 401) {
+      if (usersRes.status === 401 || catRes.status === 401) {
         setIsAuthRequired(true);
         setLoading(false);
         return;
       }
 
-      setIsAuthRequired(false);
-
-      if (resCat.ok) {
-        const d = await resCat.json();
-        setCategories(d.categories ?? []);
-      }
-      if (resMenu.ok) {
-        const d = await resMenu.json();
-        setMenus(d.menus ?? []);
-      }
-      if (resUsers.ok) {
-        const d = await resUsers.json();
-        const uList: UserItem[] = d.users ?? [];
-        setUsers(uList);
-        if (uList.length > 0 && !selectedUser) {
-          setSelectedUser(uList[0]);
-          void loadUserPrefs(uList[0].id);
+      if (usersRes.ok) {
+        const data = await usersRes.json();
+        setUsers(data.users || []);
+        if (data.users?.length > 0 && !selectedUser) {
+          setSelectedUser(data.users[0]);
+          setPushTargetUserId(data.users[0].id);
         }
       }
-    } catch (e) {
-      setError("เกิดข้อผิดพลาดในการโหลดข้อมูลหลังบ้าน");
+
+      if (catRes.ok) {
+        const data = await catRes.json();
+        setCategories(data.categories || []);
+      }
+    } catch (err: any) {
+      setError("ไม่สามารถโหลดข้อมูลเริ่มต้นได้: " + err.message);
     } finally {
       setLoading(false);
     }
-  }
+  }, [selectedUser]);
 
-  async function handleLogin(e: React.FormEvent) {
-    e.preventDefault();
-    if (!loginEmail.trim() || !loginPassword) {
-      setLoginError("กรุณากรอกอีเมลและรหัสผ่าน");
-      return;
+  useEffect(() => {
+    void loadInitialData();
+  }, [loadInitialData]);
+
+  // Load Analytics
+  const loadAnalytics = useCallback(async () => {
+    setAnalyticsLoading(true);
+    try {
+      const query = new URLSearchParams({ ym: selectedYm });
+      if (selectedUser) query.set("userId", selectedUser.id);
+      const res = await fetch(`/api/admin/analytics?${query.toString()}`);
+      if (res.ok) {
+        const data = await res.json();
+        setAnalytics(data);
+      }
+    } catch (err) {
+      console.error("Load analytics failed:", err);
+    } finally {
+      setAnalyticsLoading(false);
     }
+  }, [selectedYm, selectedUser]);
 
-    setLoginLoading(true);
-    setLoginError(null);
+  useEffect(() => {
+    if (tab === "analytics") void loadAnalytics();
+  }, [tab, loadAnalytics]);
+
+  // Load Transactions
+  const loadTransactions = useCallback(async () => {
+    try {
+      const query = new URLSearchParams();
+      if (selectedUser) query.set("userId", selectedUser.id);
+      if (txFilterCategory) query.set("category", txFilterCategory);
+      if (txFilterType) query.set("type", txFilterType);
+
+      const res = await fetch(`/api/admin/transactions?${query.toString()}`);
+      if (res.ok) {
+        const data = await res.json();
+        setTransactions(data.transactions || []);
+      }
+    } catch (err) {
+      console.error("Load transactions failed:", err);
+    }
+  }, [selectedUser, txFilterCategory, txFilterType]);
+
+  useEffect(() => {
+    if (tab === "transactions") void loadTransactions();
+  }, [tab, loadTransactions]);
+
+  // Load Budgets for Selected User
+  const loadBudgets = useCallback(async () => {
+    if (!selectedUser) return;
+    try {
+      const res = await fetch(`/api/admin/budgets?userId=${selectedUser.id}&ym=${selectedYm}`);
+      if (res.ok) {
+        const data = await res.json();
+        setBudgetMonthlySalary(String(data.salary || 0));
+
+        const weeks = data.monthWeeks || [];
+        const mappedEnvelopes = weeks.map((w: any) => {
+          const match = data.envelopes?.find((e: any) => e.weekIndex === w.weekIndex);
+          return {
+            weekIndex: w.weekIndex,
+            startDate: w.startDate,
+            endDate: w.endDate,
+            label: w.label,
+            budgetAmount: match ? Number(match.budgetAmount) : 0,
+          };
+        });
+        setEnvelopes(mappedEnvelopes);
+
+        const todayBudget = data.dailyBudgets?.find((b: any) => b.date === budgetDailyDate);
+        if (todayBudget) setBudgetDaily(String(todayBudget.amount));
+      }
+    } catch (err) {
+      console.error("Load budgets failed:", err);
+    }
+  }, [selectedUser, selectedYm, budgetDailyDate]);
+
+  useEffect(() => {
+    if (tab === "budgets") void loadBudgets();
+  }, [tab, loadBudgets]);
+
+  // Save Budget
+  async function handleSaveBudget(e: React.FormEvent) {
+    e.preventDefault();
+    if (!selectedUser) return;
+    setSavingBudget(true);
+    setError(null);
+    setSuccessMsg(null);
 
     try {
-      const res = await fetch("/api/admin/login", {
+      const res = await fetch("/api/admin/budgets", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          email: loginEmail.trim(),
-          password: loginPassword,
+          targetUserId: selectedUser.id,
+          ym: selectedYm,
+          monthlySalary: parseFloat(budgetMonthlySalary) || 0,
+          dailyBudget: parseFloat(budgetDaily) || 0,
+          dailyDate: budgetDailyDate,
+          envelopes,
         }),
       });
 
       const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || "เข้าสู่ระบบไม่สำเร็จ");
-      }
+      if (!res.ok) throw new Error(data.error || "บันทึกงบประมาณไม่สำเร็จ");
 
-      setIsAuthRequired(false);
-      setSuccessMsg("เข้าสู่ระบบผู้ดูแลระบบสำเร็จ!");
-      void loadData();
+      setSuccessMsg("บันทึกการตั้งค่างบประมาณสำเร็จ! ข้อมูลถูกส่งไปแสดงที่หน้าบ้านแล้ว ✨");
     } catch (err: any) {
-      setLoginError(err.message || "อีเมลหรือรหัสผ่านผู้ดูแลระบบไม่ถูกต้อง");
+      setError(err.message || "เกิดข้อผิดพลาดในการบันทึก");
     } finally {
-      setLoginLoading(false);
+      setSavingBudget(false);
     }
   }
 
-  async function handleLogout() {
+  // Delete Transaction
+  async function handleDeleteTx(id: number) {
+    if (!confirm("ต้องการลบรายการนี้ใช่หรือไม่?")) return;
     try {
-      await fetch("/api/admin/logout", { method: "POST" });
-    } catch {
-      // ignore
-    }
-    setIsAuthRequired(true);
-  }
-
-  async function loadUserPrefs(userId: string) {
-    try {
-      const res = await fetch(`/api/admin/users/${userId}/menus`, { cache: "no-store" });
+      const res = await fetch(`/api/admin/transactions?id=${id}`, { method: "DELETE" });
       if (res.ok) {
-        const d = await res.json();
-        const prefMap: Record<string, boolean> = {};
-        (d.preferences ?? []).forEach((p: UserMenuPreference) => {
-          prefMap[p.menuKey] = p.isVisible;
-        });
-        setTargetUserPrefs(prefMap);
+        setTransactions((prev) => prev.filter((t) => t.id !== id));
       }
-    } catch (e) {
-      setError("โหลดสิทธิ์เมนูของผู้ใช้ไม่สำเร็จ");
+    } catch (err) {
+      alert("ลบรายการไม่สำเร็จ");
     }
   }
 
-  useEffect(() => {
-    void loadData();
-  }, []);
-
-  function handleSelectUser(u: UserItem) {
-    setSelectedUser(u);
-    void loadUserPrefs(u.id);
-  }
-
-  const mainCategories = useMemo(
-    () => categories.filter((c) => c.parentId === null),
-    [categories],
-  );
-
-  const mainMenus = useMemo(
-    () => menus.filter((m) => m.parentId === null),
-    [menus],
-  );
-
-  async function toggleCategoryActive(id: number, currentActive: boolean) {
-    try {
-      const res = await fetch(`/api/admin/categories/${id}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ isActive: !currentActive }),
-      });
-      if (res.ok) {
-        setCategories((prev) =>
-          prev.map((c) => (c.id === id ? { ...c, isActive: !currentActive } : c)),
-        );
-      }
-    } catch (e) {
-      setError("อัปเดตสถานะไม่สำเร็จ");
-    }
-  }
-
-  async function updateCategoryParent(id: number, parentId: number | null) {
-    try {
-      const res = await fetch(`/api/admin/categories/${id}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ parentId }),
-      });
-      if (res.ok) {
-        setCategories((prev) =>
-          prev.map((c) => (c.id === id ? { ...c, parentId } : c)),
-        );
-        setSuccessMsg("ย้ายหมวดหมู่เรียบร้อยแล้ว");
-      }
-    } catch (e) {
-      setError("ย้ายหมวดหมู่ไม่สำเร็จ");
-    }
-  }
-
+  // Add Category
   async function handleAddCategory(e: React.FormEvent) {
     e.preventDefault();
     if (!newCatName.trim()) return;
@@ -286,182 +290,123 @@ export default function AdminView() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          name: newCatName,
-          icon: newCatIcon || "📦",
-          parentId: newCatParentId === "root" ? null : Number(newCatParentId),
+          name: newCatName.trim(),
+          icon: newCatIcon,
           type: newCatType,
+          sortOrder: categories.length + 1,
         }),
       });
 
       if (res.ok) {
+        const data = await res.json();
+        setCategories((prev) => [...prev, data.category]);
         setNewCatName("");
-        setNewCatIcon("📦");
-        setNewCatParentId("root");
-        setSuccessMsg("เพิ่มหมวดหมู่ใหม่เรียบร้อยแล้ว");
-        void loadData();
+        setSuccessMsg("เพิ่มหมวดหมู่สำเร็จ!");
       }
-    } catch (e) {
+    } catch (err) {
       setError("เพิ่มหมวดหมู่ไม่สำเร็จ");
     }
   }
 
-  async function broadcastMenuUpdate() {
-    // ส่งสัญญาณ Realtime เฉพาะตอนที่แอดมินกำลังอยู่ในหน้าจัดการสิทธิ์ผู้ใช้เท่านั้น
-    if (tab !== "users") return;
+  // Handle Login
+  async function handleAdminLogin(e: React.FormEvent) {
+    e.preventDefault();
+    setLoginLoading(true);
+    setLoginError(null);
     try {
-      const supabase = createClient();
-      await supabase.channel("menu-realtime-sync").send({
-        type: "broadcast",
-        event: "menu_updated",
-        payload: { timestamp: Date.now() },
-      });
-    } catch {
-      // ignore
-    }
-  }
-
-  async function toggleMenuActive(id: number, currentActive: boolean) {
-    try {
-      const res = await fetch(`/api/admin/menus/${id}`, {
-        method: "PUT",
+      const res = await fetch("/api/admin/login", {
+        method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ isActive: !currentActive }),
+        body: JSON.stringify({ email: loginEmail, password: loginPassword }),
       });
-      if (res.ok) {
-        setMenus((prev) =>
-          prev.map((m) => (m.id === id ? { ...m, isActive: !currentActive } : m)),
-        );
-        void broadcastMenuUpdate();
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setIsAuthRequired(false);
+        void loadInitialData();
+      } else {
+        setLoginError(data.error || "รหัสผ่านไม่ถูกต้อง");
       }
-    } catch (e) {
-      setError("อัปเดตสถานะเมนูไม่สำเร็จ");
+    } catch (err: any) {
+      setLoginError(err.message || "เกิดข้อผิดพลาดในการเข้าสู่ระบบ");
+    } finally {
+      setLoginLoading(false);
     }
   }
 
-  async function updateMenuParent(id: number, parentId: number | null) {
-    try {
-      const res = await fetch(`/api/admin/menus/${id}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ parentId }),
-      });
-      if (res.ok) {
-        setMenus((prev) =>
-          prev.map((m) => (m.id === id ? { ...m, parentId } : m)),
+  // Handle Logout
+  async function handleAdminLogout() {
+    await fetch("/api/admin/logout", { method: "POST" });
+    setIsAuthRequired(true);
+  }
+
+  // Filtered Transactions
+  const filteredTransactions = useMemo(() => {
+    return transactions.filter((t) => {
+      if (txSearch.trim()) {
+        const q = txSearch.toLowerCase();
+        return (
+          t.note?.toLowerCase().includes(q) ||
+          t.category.toLowerCase().includes(q) ||
+          String(t.amount).includes(q)
         );
-        setSuccessMsg("ย้ายเมนูเรียบร้อยแล้ว");
-        void broadcastMenuUpdate();
       }
-    } catch (e) {
-      setError("ย้ายเมนูไม่สำเร็จ");
-    }
-  }
-
-  async function toggleUserTargetMenuPreference(menuKey: string, currentVisible: boolean) {
-    if (!selectedUser) return;
-    const nextVisible = !currentVisible;
-    try {
-      const res = await fetch(`/api/admin/users/${selectedUser.id}/menus`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ menuKey, isVisible: nextVisible }),
-      });
-
-      if (res.ok) {
-        setTargetUserPrefs((prev) => ({ ...prev, [menuKey]: nextVisible }));
-        setSuccessMsg(
-          nextVisible
-            ? `เปิดการมองเห็นเมนู [${menuKey}] ให้ผู้ใช้แล้ว`
-            : `ปิดสิทธิ์ซ่อนเมนู [${menuKey}] สำหรับผู้ใช้แล้ว`,
-        );
-        void broadcastMenuUpdate();
-      }
-    } catch (e) {
-      setError("อัปเดตสิทธิ์เมนูผู้ใช้ไม่สำเร็จ");
-    }
-  }
-
-  async function applyPreferenceToAllUsers(menuKey: string, isVisible: boolean) {
-    try {
-      await Promise.all(
-        users.map((u) =>
-          fetch(`/api/admin/users/${u.id}/menus`, {
-            method: "PUT",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ menuKey, isVisible }),
-          }),
-        ),
-      );
-      setTargetUserPrefs((prev) => ({ ...prev, [menuKey]: isVisible }));
-      setSuccessMsg(
-        isVisible
-          ? `เปิดการมองเห็นเมนู [${menuKey}] ให้ผู้ใช้ทุกคนแล้ว`
-          : `ปิดสิทธิ์ซ่อนเมนู [${menuKey}] สำหรับผู้ใช้ทุกคน (${users.length} คน) เรียบร้อยแล้ว`,
-      );
-      void broadcastMenuUpdate();
-    } catch (e) {
-      setError("อัปเดตสิทธิ์ผู้ใช้ทุกคนไม่สำเร็จ");
-    }
-  }
+      return true;
+    });
+  }, [transactions, txSearch]);
 
   if (isAuthRequired) {
     return (
-      <div className="mx-auto w-full max-w-md space-y-4 pop-in pt-6">
-        <div className="card space-y-4 p-6 border-indigo-500/30 bg-gradient-to-br from-indigo-900/30 via-surface to-surface">
-          <div className="text-center space-y-2">
-            <div className="mx-auto flex size-14 items-center justify-center rounded-2xl bg-indigo-500/20 text-indigo-400 border border-indigo-500/30 shadow-lg shadow-indigo-500/10">
-              <Lock size={28} />
+      <div className="flex min-h-screen items-center justify-center bg-slate-950 px-4 text-slate-100">
+        <div className="w-full max-w-md rounded-2xl border border-slate-800 bg-slate-900 p-6 shadow-2xl">
+          <div className="flex flex-col items-center text-center">
+            <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 mb-3">
+              <Lock size={24} />
             </div>
-            <h2 className="text-lg font-bold text-foreground">
-              เข้าสู่ระบบผู้ดูแลระบบ (Admin Portal)
-            </h2>
-            <p className="text-xs text-muted max-w-xs mx-auto">
-              ระบบหลังบ้านสำหรับจัดการผู้ใช้งาน สิทธิ์เมนู และหมวดหมู่การเงิน
-            </p>
+            <h1 className="text-xl font-bold text-white">Expense Dashboard Portal</h1>
+            <p className="mt-1 text-xs text-slate-400">เข้าสู่ระบบจัดการหลังบ้านและวิเคราะห์การเงิน</p>
           </div>
 
-          {loginError && (
-            <div className="rounded-xl bg-rose-500/10 border border-rose-500/30 p-3 text-xs text-rose-400 font-medium text-center">
-              {loginError}
-            </div>
-          )}
-
-          <form onSubmit={handleLogin} className="space-y-3.5 pt-1">
+          <form onSubmit={handleAdminLogin} className="mt-6 space-y-4">
+            {loginError && (
+              <div className="rounded-xl border border-rose-500/30 bg-rose-950/40 p-3 text-xs text-rose-300">
+                {loginError}
+              </div>
+            )}
             <div>
-              <label className="text-[11px] font-semibold text-muted flex items-center gap-1">
-                <Mail size={13} className="text-indigo-400" /> อีเมลผู้ดูแลระบบ (Admin Email)
-              </label>
-              <input
-                type="email"
-                required
-                value={loginEmail}
-                onChange={(e) => setLoginEmail(e.target.value)}
-                placeholder="Pondkub1324@gmail.com"
-                className="mt-1 w-full rounded-xl border border-border bg-surface-2 px-3.5 py-2.5 text-xs font-semibold text-foreground focus:border-indigo-500 focus:outline-none"
-              />
+              <label className="block text-xs font-medium text-slate-300 mb-1">อีเมลแอดมิน</label>
+              <div className="relative">
+                <Mail size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
+                <input
+                  type="email"
+                  value={loginEmail}
+                  onChange={(e) => setLoginEmail(e.target.value)}
+                  className="w-full rounded-xl border border-slate-800 bg-slate-950 py-2.5 pl-9 pr-3 text-xs text-white outline-none focus:border-emerald-500"
+                  required
+                />
+              </div>
             </div>
 
             <div>
-              <label className="text-[11px] font-semibold text-muted flex items-center gap-1">
-                <KeyRound size={13} className="text-indigo-400" /> รหัสผ่าน (Admin Password)
-              </label>
-              <input
-                type="password"
-                required
-                value={loginPassword}
-                onChange={(e) => setLoginPassword(e.target.value)}
-                placeholder="••••••••••••"
-                className="mt-1 w-full rounded-xl border border-border bg-surface-2 px-3.5 py-2.5 text-xs font-semibold text-foreground focus:border-indigo-500 focus:outline-none"
-              />
+              <label className="block text-xs font-medium text-slate-300 mb-1">รหัสผ่าน</label>
+              <div className="relative">
+                <KeyRound size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
+                <input
+                  type="password"
+                  value={loginPassword}
+                  onChange={(e) => setLoginPassword(e.target.value)}
+                  placeholder="••••••••"
+                  className="w-full rounded-xl border border-slate-800 bg-slate-950 py-2.5 pl-9 pr-3 text-xs text-white outline-none focus:border-emerald-500"
+                  required
+                />
+              </div>
             </div>
 
             <button
               type="submit"
               disabled={loginLoading}
-              className="flex w-full items-center justify-center gap-2 rounded-xl bg-indigo-600 px-4 py-3 text-xs font-bold text-white shadow-lg shadow-indigo-600/30 transition hover:bg-indigo-500 active:scale-95 disabled:opacity-50"
+              className="flex w-full items-center justify-center gap-2 rounded-xl bg-emerald-600 py-2.5 text-xs font-bold text-white shadow-lg shadow-emerald-600/30 hover:bg-emerald-500 disabled:opacity-50"
             >
-              <Sparkles size={16} />
-              {loginLoading ? "กำลังตรวจสอบข้อมูล..." : "เข้าสู่ระบบผู้ดูแลระบบ"}
+              {loginLoading ? <Loader2 size={16} className="animate-spin" /> : "เข้าสู่ระบบ Dashboard"}
             </button>
           </form>
         </div>
@@ -474,536 +419,706 @@ export default function AdminView() {
   }
 
   return (
-    <div className="space-y-3 pop-in">
-      <div className="card p-4 bg-accent/10 border-b border-border/50 flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <Settings className="text-accent" size={20} />
-          <div>
-            <h2 className="font-bold text-base">Expense Tracking Management Dashboard</h2>
-            <p className="text-[11px] text-muted">
-              แดชบอร์ดหลังบ้าน สำหรับจัดการผู้ใช้ สิทธิ์การเห็นเมนู และหมวดหมู่ระบบ
-            </p>
-          </div>
-        </div>
-        <button
-          type="button"
-          onClick={handleLogout}
-          className="flex items-center gap-1 rounded-xl bg-rose-500/15 border border-rose-500/30 px-3 py-1.5 text-xs font-semibold text-rose-400 hover:bg-rose-500/25 active:scale-95 transition"
-        >
-          <LogOut size={14} />
-          <span>ออกจากระบบ</span>
-        </button>
-      </div>
-
-      {error && (
-        <div
-          onClick={() => setError(null)}
-          className="cursor-pointer rounded-xl bg-expense-soft p-3 text-center text-xs text-expense"
-        >
-          {error} (แตะเพื่อปิด)
-        </div>
-      )}
-      {successMsg && (
-        <div
-          onClick={() => setSuccessMsg(null)}
-          className="cursor-pointer rounded-xl bg-income-soft p-3 text-center text-xs text-income font-medium"
-        >
-          {successMsg} (แตะเพื่อปิด)
-        </div>
-      )}
-
-      <div className="flex rounded-xl bg-surface-2 p-1 text-xs">
-        <button
-          onClick={() => setTab("users")}
-          className={clsx(
-            "flex flex-1 items-center justify-center gap-1.5 py-2 font-medium rounded-lg transition",
-            tab === "users"
-              ? "bg-surface text-accent font-semibold shadow-sm"
-              : "text-muted hover:text-foreground",
-          )}
-        >
-          <Users size={14} /> จัดการสิทธิ์ผู้ใช้ ({users.length})
-        </button>
-        <button
-          onClick={() => setTab("categories")}
-          className={clsx(
-            "flex flex-1 items-center justify-center gap-1.5 py-2 font-medium rounded-lg transition",
-            tab === "categories"
-              ? "bg-surface text-accent font-semibold shadow-sm"
-              : "text-muted hover:text-foreground",
-          )}
-        >
-          <FolderTree size={14} /> จัดการหมวดหมู่ ({categories.length})
-        </button>
-        <button
-          onClick={() => setTab("menus")}
-          className={clsx(
-            "flex flex-1 items-center justify-center gap-1.5 py-2 font-medium rounded-lg transition",
-            tab === "menus"
-              ? "bg-surface text-accent font-semibold shadow-sm"
-              : "text-muted hover:text-foreground",
-          )}
-        >
-          <ListFilter size={14} /> เมนู ({menus.length})
-        </button>
-        <button
-          onClick={() => setTab("push")}
-          className={clsx(
-            "flex flex-1 items-center justify-center gap-1.5 py-2 font-medium rounded-lg transition",
-            tab === "push"
-              ? "bg-indigo-600 text-white font-bold shadow-sm"
-              : "text-indigo-400 hover:text-foreground font-semibold",
-          )}
-        >
-          <Bell size={14} /> 🔔 ยิง Push Noti
-        </button>
-      </div>
-
-      {tab === "users" ? (
-        <div className="space-y-3">
-          <div className="card p-4 space-y-3">
-            <div className="flex items-center gap-2 border-b border-border pb-2">
-              <Users size={16} className="text-accent" />
-              <h3 className="font-semibold text-xs text-foreground">
-                เลือกผู้ใช้งานเพื่อจัดการสิทธิ์การมองเห็น (User Access Management)
-              </h3>
+    <div className="min-h-screen bg-slate-950 text-slate-100 antialiased">
+      {/* 1. Dashboard Top Header */}
+      <header className="sticky top-0 z-30 border-b border-slate-800/80 bg-slate-950/90 backdrop-blur-md">
+        <div className="mx-auto flex max-w-7xl items-center justify-between px-4 py-3 sm:px-6">
+          <div className="flex items-center gap-3">
+            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 font-bold">
+              <BarChart3 size={18} />
             </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-              {users.map((u) => {
-                const isSelected = selectedUser?.id === u.id;
-                return (
-                  <button
-                    key={u.id}
-                    onClick={() => handleSelectUser(u)}
-                    className={clsx(
-                      "flex items-center justify-between rounded-xl border p-3 text-left transition",
-                      isSelected
-                        ? "border-accent bg-accent/10 shadow-sm"
-                        : "border-border bg-surface-2/60 hover:bg-surface-2",
-                    )}
-                  >
-                    <div className="flex items-center gap-2.5">
-                      <div className="flex h-8 w-8 items-center justify-center rounded-full bg-accent/20 text-xs font-bold text-accent">
-                        👤
-                      </div>
-                      <div>
-                        <div className="font-bold text-xs text-foreground">{u.email}</div>
-                        <div className="text-[10px] text-muted font-mono">
-                          ID: {u.id.slice(0, 12)}...
-                        </div>
-                      </div>
-                    </div>
-                    {isSelected && (
-                      <span className="text-[10px] bg-accent text-white px-2 py-0.5 rounded-full font-medium">
-                        เลือกอยู่
-                      </span>
-                    )}
-                  </button>
-                );
-              })}
+            <div>
+              <h1 className="text-base font-bold text-white leading-none">Expense Dashboard</h1>
+              <span className="text-[11px] text-slate-400">ระบบวิเคราะห์การเงินและจัดการงบประมาณหลังบ้าน</span>
             </div>
           </div>
 
-          {selectedUser && (
-            <div className="card p-4 space-y-3 bg-surface border-accent/40">
-              <div className="flex items-center justify-between border-b border-border pb-2">
-                <div className="flex items-center gap-2">
-                  <UserCheck size={16} className="text-accent" />
-                  <h3 className="font-bold text-xs text-foreground">
-                    สิทธิ์การมองเห็นเมนูของ: <span className="text-accent">{selectedUser.email}</span>
-                  </h3>
-                </div>
-                <span className="text-[10px] bg-accent/15 text-accent px-2 py-0.5 rounded-full font-medium">
-                  User ID: {selectedUser.id.slice(0, 8)}
-                </span>
-              </div>
-
-              <p className="text-[11px] text-muted">
-                แอดมินสามารถเปิดหรือปิดสิทธิ์เมนูเฉพาะของผู้ใช้คนนี้ได้ เมื่อปิดสิทธิ์ ผู้ใช้จะเห็นหน้าการแจ้งเตือน Soft-Tone เป็นกันเองเมื่อพยายามเข้าถึง
-              </p>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
-                {menus.map((m) => {
-                  const isVisibleForUser = targetUserPrefs[m.key] !== false;
-                  return (
-                    <div
-                      key={m.key}
-                      className="flex flex-col gap-2 rounded-xl border border-border/80 bg-surface-2 p-3 text-xs"
-                    >
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-2">
-                          <span className="font-semibold text-foreground">{m.label}</span>
-                          <span className="text-[10px] text-muted">({m.key})</span>
-                        </div>
-
-                        <button
-                          onClick={() =>
-                            void toggleUserTargetMenuPreference(m.key, isVisibleForUser)
-                          }
-                          className={clsx(
-                            "flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-[11px] font-semibold transition active:scale-95",
-                            isVisibleForUser
-                              ? "bg-income/20 text-income hover:bg-income/30"
-                              : "bg-expense/20 text-expense hover:bg-expense/30",
-                          )}
-                        >
-                          {isVisibleForUser ? <Eye size={13} /> : <EyeOff size={13} />}
-                          {isVisibleForUser ? "อนุญาตให้เห็น" : "ปิดสิทธิ์ (ซ่อนแล้ว)"}
-                        </button>
-                      </div>
-
-                      <div className="flex justify-end pt-1 border-t border-border/40">
-                        <button
-                          onClick={() => void applyPreferenceToAllUsers(m.key, !isVisibleForUser)}
-                          className="text-[10px] text-muted hover:text-accent underline transition"
-                        >
-                          {isVisibleForUser ? "ปิดสิทธิ์เมนูนี้ให้ผู้ใช้ทุกคน" : "เปิดสิทธิ์เมนูนี้ให้ผู้ใช้ทุกคน"}
-                        </button>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          )}
-        </div>
-      ) : tab === "categories" ? (
-        <div className="space-y-3">
-          <div className="card p-4 space-y-3">
-            <div className="flex items-center gap-2 border-b border-border pb-2">
-              <Plus size={16} className="text-accent" />
-              <h3 className="font-semibold text-xs text-foreground">เพิ่มหมวดหมู่ใหม่</h3>
-            </div>
-
-            <form onSubmit={handleAddCategory} className="space-y-3 text-xs">
-              <div className="grid grid-cols-4 gap-2">
-                <div className="col-span-1">
-                  <label className="block text-[11px] font-medium text-muted mb-1">ไอคอน</label>
-                  <input
-                    type="text"
-                    value={newCatIcon}
-                    onChange={(e) => setNewCatIcon(e.target.value)}
-                    className="w-full text-center rounded-xl border border-border bg-surface-2 py-2 text-base outline-none font-sans"
-                    placeholder="🍚"
-                  />
-                </div>
-                <div className="col-span-3">
-                  <label className="block text-[11px] font-medium text-muted mb-1">ชื่อหมวดหมู่</label>
-                  <input
-                    type="text"
-                    value={newCatName}
-                    onChange={(e) => setNewCatName(e.target.value)}
-                    placeholder="เช่น ค่าเน็ต, ค่าฟิตเนส"
-                    className="w-full rounded-xl border border-border bg-surface-2 px-3 py-2 text-xs outline-none focus:border-accent"
-                    required
-                  />
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-[11px] font-medium text-muted mb-1.5">
-                  เลือก Emoji ไอคอนประจำหมวดหมู่ (หรือพิมพ์เองในช่องด้านบน)
-                </label>
-                <div className="grid grid-cols-7 sm:grid-cols-14 gap-1 p-2 rounded-xl border border-border/70 bg-surface-2/50 max-h-32 overflow-y-auto">
-                  {PRESET_EMOJIS.map((emoji) => (
-                    <button
-                      key={emoji}
-                      type="button"
-                      onClick={() => setNewCatIcon(emoji)}
-                      className={`flex h-8 items-center justify-center rounded-lg border text-sm transition ${
-                        newCatIcon === emoji
-                          ? "border-accent bg-accent/20 ring-1 ring-accent"
-                          : "border-border/40 hover:bg-surface"
-                      }`}
-                    >
-                      {emoji}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-2">
-                <div>
-                  <label className="block text-[11px] font-medium text-muted mb-1">หัวข้อหลัก/กลุ่ม</label>
-                  <select
-                    value={newCatParentId}
-                    onChange={(e) => setNewCatParentId(e.target.value)}
-                    className="w-full rounded-xl border border-border bg-surface-2 px-2.5 py-2 text-xs outline-none"
-                  >
-                    <option value="root">-- เป็นหมวดหมู่หลัก --</option>
-                    {mainCategories.map((mc) => (
-                      <option key={mc.id} value={mc.id}>
-                        {mc.icon} {mc.name}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-[11px] font-medium text-muted mb-1">ประเภท</label>
-                  <select
-                    value={newCatType}
-                    onChange={(e) =>
-                      setNewCatType(e.target.value as "expense" | "income" | "both")
-                    }
-                    className="w-full rounded-xl border border-border bg-surface-2 px-2.5 py-2 text-xs outline-none"
-                  >
-                    <option value="expense">รายจ่าย (Expense)</option>
-                    <option value="income">รายรับ (Income)</option>
-                    <option value="both">ทั้งสองอย่าง (Both)</option>
-                  </select>
-                </div>
-              </div>
-
-              <button
-                type="submit"
-                className="flex w-full items-center justify-center gap-1.5 rounded-xl bg-accent py-2.5 font-semibold text-white transition hover:brightness-110 active:scale-95"
+          <div className="flex items-center gap-2">
+            {/* User Selector */}
+            {users.length > 0 && (
+              <select
+                value={selectedUser?.id || ""}
+                onChange={(e) => {
+                  const u = users.find((item) => item.id === e.target.value) || null;
+                  setSelectedUser(u);
+                  if (u) setPushTargetUserId(u.id);
+                }}
+                className="rounded-xl border border-slate-800 bg-slate-900 px-3 py-1.5 text-xs font-medium text-slate-200 outline-none focus:border-emerald-500"
               >
-                <Plus size={15} /> บันทึกหมวดหมู่ใหม่
-              </button>
-            </form>
+                {users.map((u) => (
+                  <option key={u.id} value={u.id}>
+                    👤 {u.email}
+                  </option>
+                ))}
+              </select>
+            )}
+
+            <button
+              onClick={handleAdminLogout}
+              className="flex items-center gap-1.5 rounded-xl border border-slate-800 bg-slate-900 px-3 py-1.5 text-xs font-medium text-rose-400 hover:bg-slate-800 active:scale-95"
+            >
+              <LogOut size={14} />
+              <span className="hidden sm:inline">ออกจากระบบ</span>
+            </button>
           </div>
+        </div>
 
-          <div className="card p-4 space-y-3">
-            <h3 className="font-semibold text-xs text-muted border-b border-border pb-2">
-              รายการหมวดหมู่และหมวดหมู่ย่อย (ย้ายกลุ่ม / เปิด-ปิด)
-            </h3>
+        {/* 2. Navigation Tabs */}
+        <div className="mx-auto flex max-w-7xl gap-1 overflow-x-auto px-4 pb-2 sm:px-6 border-t border-slate-800/40 pt-2">
+          {[
+            { id: "analytics" as AdminTab, label: "ภาพรวม & วิเคราะห์", icon: BarChart3 },
+            { id: "transactions" as AdminTab, label: "บัญชีธุรกรรมทั้งหมด", icon: Receipt },
+            { id: "budgets" as AdminTab, label: "กำหนดงบ & เงินเดือน", icon: Wallet },
+            { id: "categories" as AdminTab, label: "หมวดหมู่", icon: FolderTree },
+            { id: "users" as AdminTab, label: "ผู้ใช้งาน", icon: Users },
+            { id: "push" as AdminTab, label: "แจ้งเตือน Push", icon: Bell },
+          ].map((t) => {
+            const Icon = t.icon;
+            const active = tab === t.id;
+            return (
+              <button
+                key={t.id}
+                onClick={() => setTab(t.id)}
+                className={clsx(
+                  "flex items-center gap-2 rounded-xl px-3.5 py-2 text-xs font-semibold transition-all shrink-0",
+                  active
+                    ? "bg-emerald-600 text-white shadow-md shadow-emerald-600/20"
+                    : "text-slate-400 hover:bg-slate-900 hover:text-slate-200"
+                )}
+              >
+                <Icon size={15} />
+                <span>{t.label}</span>
+              </button>
+            );
+          })}
+        </div>
+      </header>
 
-            <div className="space-y-2">
-              {mainCategories.map((mainCat) => {
-                const subs = categories.filter((c) => c.parentId === mainCat.id);
-                return (
-                  <div key={mainCat.id} className="rounded-xl border border-border bg-surface-2/60 p-3 space-y-2">
-                    <div className="flex items-center justify-between gap-2">
-                      <div className="flex items-center gap-2">
-                        <span className="text-lg">{mainCat.icon}</span>
-                        <span className="font-bold text-sm text-foreground">{mainCat.name}</span>
-                        <span className="text-[10px] rounded-full bg-accent/10 px-2 py-0.5 text-accent font-medium">
-                          หลัก
-                        </span>
-                      </div>
+      {/* Main Workspace */}
+      <main className="mx-auto max-w-7xl px-4 py-6 sm:px-6 space-y-6">
+        {/* Toast Messages */}
+        {error && (
+          <div className="flex items-center justify-between rounded-xl border border-rose-500/30 bg-rose-950/40 p-3 text-xs text-rose-300">
+            <div className="flex items-center gap-2">
+              <AlertCircle size={16} className="text-rose-400" />
+              <span>{error}</span>
+            </div>
+            <button onClick={() => setError(null)}>
+              <X size={14} />
+            </button>
+          </div>
+        )}
 
-                      <div className="flex items-center gap-2">
-                        <button
-                          onClick={() => toggleCategoryActive(mainCat.id, mainCat.isActive)}
-                          className={clsx(
-                            "flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-semibold transition",
-                            mainCat.isActive
-                              ? "bg-income/20 text-income"
-                              : "bg-expense/20 text-expense",
-                          )}
-                        >
-                          <Power size={11} /> {mainCat.isActive ? "เปิดใช้งาน" : "ปิดใช้งาน"}
-                        </button>
-                      </div>
+        {successMsg && (
+          <div className="flex items-center justify-between rounded-xl border border-emerald-500/30 bg-emerald-950/40 p-3 text-xs text-emerald-300">
+            <div className="flex items-center gap-2">
+              <CheckCircle2 size={16} className="text-emerald-400" />
+              <span>{successMsg}</span>
+            </div>
+            <button onClick={() => setSuccessMsg(null)}>
+              <X size={14} />
+            </button>
+          </div>
+        )}
+
+        {/* TAB 1: Analytics Overview */}
+        {tab === "analytics" && (
+          <div className="space-y-6">
+            {/* Header / Month Filter */}
+            <div className="flex items-center justify-between flex-wrap gap-3">
+              <div>
+                <h2 className="text-lg font-bold text-white">📊 ภาพรวมและสถิติการเงิน</h2>
+                <p className="text-xs text-slate-400">
+                  {selectedUser ? `ข้อมูลของ: ${selectedUser.email}` : "ข้อมูลรวมทั้งหมด"}
+                </p>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <input
+                  type="month"
+                  value={selectedYm}
+                  onChange={(e) => setSelectedYm(e.target.value)}
+                  className="rounded-xl border border-slate-800 bg-slate-900 px-3 py-1.5 text-xs text-slate-200 outline-none focus:border-emerald-500"
+                />
+              </div>
+            </div>
+
+            {/* KPI Cards */}
+            {analyticsLoading ? (
+              <div className="flex justify-center py-12">
+                <Loader2 size={24} className="animate-spin text-emerald-500" />
+              </div>
+            ) : analytics ? (
+              <>
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+                  <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-5 shadow-lg">
+                    <span className="text-xs font-medium uppercase tracking-wider text-slate-400">
+                      รายจ่ายรวมเดือนนี้
+                    </span>
+                    <div className="mt-2 flex items-baseline gap-1 text-2xl font-black text-rose-400">
+                      <span>฿</span>
+                      <span>{formatBaht(analytics.totalExpense)}</span>
                     </div>
+                  </div>
 
-                    {subs.length > 0 && (
-                      <div className="mt-2 pl-4 space-y-1.5 border-l-2 border-accent/20">
-                        {subs.map((sub) => (
-                          <div
-                            key={sub.id}
-                            className="flex items-center justify-between rounded-lg bg-surface p-2 text-xs"
-                          >
-                            <div className="flex items-center gap-2">
-                              <span>{sub.icon}</span>
-                              <span className="font-medium">{sub.name}</span>
+                  <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-5 shadow-lg">
+                    <span className="text-xs font-medium uppercase tracking-wider text-slate-400">
+                      รายรับรวมเดือนนี้
+                    </span>
+                    <div className="mt-2 flex items-baseline gap-1 text-2xl font-black text-emerald-400">
+                      <span>฿</span>
+                      <span>{formatBaht(analytics.totalIncome)}</span>
+                    </div>
+                  </div>
+
+                  <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-5 shadow-lg">
+                    <span className="text-xs font-medium uppercase tracking-wider text-slate-400">
+                      เงินเก็บสะสมสุทธิ
+                    </span>
+                    <div className="mt-2 flex items-baseline gap-1 text-2xl font-black text-indigo-400">
+                      <span>฿</span>
+                      <span>{formatBaht(analytics.netSavings)}</span>
+                    </div>
+                  </div>
+
+                  <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-5 shadow-lg">
+                    <span className="text-xs font-medium uppercase tracking-wider text-slate-400">
+                      จำนวนรายการทั้งหมด
+                    </span>
+                    <div className="mt-2 text-2xl font-black text-white">
+                      {analytics.transactionCount} รายการ
+                    </div>
+                  </div>
+                </div>
+
+                {/* Category Breakdown & Daily Trends */}
+                <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+                  {/* Category Breakdown */}
+                  <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-5 shadow-lg space-y-4">
+                    <h3 className="text-sm font-bold text-white">สัดส่วนค่าใช้จ่ายแยกตามหมวดหมู่</h3>
+                    {analytics.categoryBreakdown.length === 0 ? (
+                      <p className="text-xs text-slate-500 py-6 text-center">ยังไม่มีข้อมูลค่าใช้จ่ายในเดือนนี้</p>
+                    ) : (
+                      <div className="space-y-3">
+                        {analytics.categoryBreakdown.map((cat) => (
+                          <div key={cat.category} className="space-y-1">
+                            <div className="flex justify-between text-xs font-medium">
+                              <span className="text-slate-300">
+                                {(CATEGORY_ICON as Record<string, string>)[cat.category] || "📦"}{" "}
+                                {(CATEGORY_LABEL as Record<string, string>)[cat.category] || cat.category} ({cat.count} รายการ)
+                              </span>
+                              <span className="text-slate-200 font-bold">
+                                ฿{formatBaht(cat.total)} ({cat.percentage.toFixed(1)}%)
+                              </span>
                             </div>
-
-                            <div className="flex items-center gap-2">
-                              <div className="flex items-center gap-1 text-[11px] text-muted">
-                                <ArrowRightLeft size={11} />
-                                <select
-                                  value={sub.parentId ?? "root"}
-                                  onChange={(e) => {
-                                    const val = e.target.value;
-                                    void updateCategoryParent(
-                                      sub.id,
-                                      val === "root" ? null : Number(val),
-                                    );
-                                  }}
-                                  className="rounded-lg border border-border bg-surface-2 px-1.5 py-0.5 text-[11px] outline-none"
-                                >
-                                  {mainCategories.map((mc) => (
-                                    <option key={mc.id} value={mc.id}>
-                                      ย้ายไป {mc.name}
-                                    </option>
-                                  ))}
-                                  <option value="root">ตั้งเป็นหมวดหลัก</option>
-                                </select>
-                              </div>
-
-                              <button
-                                onClick={() => toggleCategoryActive(sub.id, sub.isActive)}
-                                className={clsx(
-                                  "rounded-full px-2 py-0.5 text-[10px] font-medium transition",
-                                  sub.isActive
-                                    ? "bg-income/10 text-income"
-                                    : "bg-expense/10 text-expense",
-                                )}
-                              >
-                                {sub.isActive ? "เปิด" : "ปิด"}
-                              </button>
+                            <div className="h-2 w-full rounded-full bg-slate-800 overflow-hidden">
+                              <div
+                                className="h-full bg-emerald-500 rounded-full transition-all duration-500"
+                                style={{ width: `${Math.min(100, Math.max(5, cat.percentage))}%` }}
+                              />
                             </div>
                           </div>
                         ))}
                       </div>
                     )}
                   </div>
-                );
-              })}
-            </div>
-          </div>
-        </div>
-      ) : (
-        <div className="card p-4 space-y-3">
-          <div className="border-b border-border pb-2">
-            <h3 className="font-semibold text-xs text-muted">
-              จัดการโครงสร้างเมนูระบบ (ระดับระบบ / Global Active Status)
-            </h3>
-          </div>
 
-          <div className="space-y-2">
-            {menus.map((m) => (
-              <div
-                key={m.id}
-                className="flex items-center justify-between rounded-xl border border-border bg-surface-2 p-3 text-xs"
-              >
-                <div className="flex items-center gap-2">
-                  <div className="font-bold text-foreground">{m.label}</div>
-                  <span className="text-[10px] font-mono text-muted bg-surface px-1.5 py-0.5 rounded">
-                    [{m.key}]
-                  </span>
+                  {/* Daily Trends */}
+                  <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-5 shadow-lg space-y-4">
+                    <h3 className="text-sm font-bold text-white">แนวโน้มการใช้จ่ายรายวัน</h3>
+                    {analytics.dailyTrend.length === 0 ? (
+                      <p className="text-xs text-slate-500 py-6 text-center">ยังไม่มีข้อมูลรายการในเดือนนี้</p>
+                    ) : (
+                      <div className="max-h-72 overflow-y-auto space-y-2 pr-1">
+                        {analytics.dailyTrend.map((day) => (
+                          <div
+                            key={day.date}
+                            className="flex items-center justify-between rounded-xl bg-slate-950 p-2.5 border border-slate-800/80 text-xs"
+                          >
+                            <span className="font-semibold text-slate-300">{formatDayTH(day.date)}</span>
+                            <div className="flex items-center gap-3">
+                              {day.income > 0 && (
+                                <span className="text-emerald-400 font-medium">+฿{formatBaht(day.income)}</span>
+                              )}
+                              <span className="text-rose-400 font-bold">-฿{formatBaht(day.expense)}</span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </>
+            ) : null}
+          </div>
+        )}
+
+        {/* TAB 2: All Transactions Ledger */}
+        {tab === "transactions" && (
+          <div className="space-y-4">
+            <div className="flex items-center justify-between flex-wrap gap-3">
+              <div>
+                <h2 className="text-lg font-bold text-white">📑 บัญชีธุรกรรมทั้งหมด</h2>
+                <p className="text-xs text-slate-400">ค้นหา ตรวจสอบ และจัดการประวัติรายการรายรับ-รายจ่าย</p>
+              </div>
+
+              {/* Filters */}
+              <div className="flex items-center gap-2 flex-wrap">
+                <div className="relative">
+                  <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
+                  <input
+                    type="text"
+                    value={txSearch}
+                    onChange={(e) => setTxSearch(e.target.value)}
+                    placeholder="ค้นหาหมายเหตุ/หมวด..."
+                    className="rounded-xl border border-slate-800 bg-slate-900 py-1.5 pl-8 pr-3 text-xs text-slate-200 outline-none focus:border-emerald-500"
+                  />
                 </div>
 
-                <div className="flex items-center gap-3">
-                  <div className="flex items-center gap-1 text-[11px] text-muted">
-                    <ArrowRightLeft size={11} />
-                    <select
-                      value={m.parentId ?? "root"}
-                      onChange={(e) => {
-                        const val = e.target.value;
-                        void updateMenuParent(
-                          m.id,
-                          val === "root" ? null : Number(val),
-                        );
-                      }}
-                      className="rounded-lg border border-border bg-surface px-2 py-1 text-[11px] outline-none"
-                    >
-                      <option value="root">เมนูหลัก (Nav Bar)</option>
-                      {mainMenus
-                        .filter((mm) => mm.id !== m.id)
-                        .map((mm) => (
-                          <option key={mm.id} value={mm.id}>
-                            ย้ายเป็นเมนูย่อยใต้ {mm.label}
-                          </option>
-                        ))}
-                    </select>
-                  </div>
+                <select
+                  value={txFilterType}
+                  onChange={(e) => setTxFilterType(e.target.value)}
+                  className="rounded-xl border border-slate-800 bg-slate-900 px-3 py-1.5 text-xs text-slate-200 outline-none focus:border-emerald-500"
+                >
+                  <option value="">ทุกประเภท</option>
+                  <option value="expense">รายจ่าย</option>
+                  <option value="income">รายรับ</option>
+                </select>
+              </div>
+            </div>
 
-                  <button
-                    onClick={() => toggleMenuActive(m.id, m.isActive)}
-                    className={clsx(
-                      "flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-semibold transition",
-                      m.isActive
-                        ? "bg-income/20 text-income"
-                        : "bg-expense/20 text-expense",
+            {/* Table */}
+            <div className="rounded-2xl border border-slate-800 bg-slate-900/60 overflow-hidden shadow-xl">
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs text-slate-300">
+                  <thead className="bg-slate-950 border-b border-slate-800 text-[11px] uppercase tracking-wider text-slate-400">
+                    <tr>
+                      <th className="p-3.5">วันที่ & เวลา</th>
+                      <th className="p-3.5">หมวดหมู่</th>
+                      <th className="p-3.5">หมายเหตุ</th>
+                      <th className="p-3.5">ประเภท</th>
+                      <th className="p-3.5 text-right">จำนวนเงิน</th>
+                      <th className="p-3.5 text-center">จัดการ</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-800/60">
+                    {filteredTransactions.length === 0 ? (
+                      <tr>
+                        <td colSpan={6} className="p-8 text-center text-slate-500">
+                          ไม่พบรายการธุรกรรม
+                        </td>
+                      </tr>
+                    ) : (
+                      filteredTransactions.map((tx) => (
+                        <tr key={tx.id} className="hover:bg-slate-800/30 transition-colors">
+                          <td className="p-3.5 font-medium text-slate-200">
+                            {formatDayTH(tx.date)} <span className="text-slate-500 font-normal">({formatTimeTH(tx.spentAt)})</span>
+                          </td>
+                          <td className="p-3.5">
+                            <span className="inline-flex items-center gap-1.5 rounded-lg bg-slate-950 px-2 py-1 border border-slate-800">
+                              <span>{(CATEGORY_ICON as Record<string, string>)[tx.category] || "📦"}</span>
+                              <span>{(CATEGORY_LABEL as Record<string, string>)[tx.category] || tx.category}</span>
+                            </span>
+                          </td>
+                          <td className="p-3.5 text-slate-300">{tx.note || "-"}</td>
+                          <td className="p-3.5">
+                            <span
+                              className={clsx(
+                                "inline-block rounded-md px-2 py-0.5 text-[10px] font-bold uppercase",
+                                tx.type === "expense"
+                                  ? "bg-rose-950/60 text-rose-400 border border-rose-500/20"
+                                  : "bg-emerald-950/60 text-emerald-400 border border-emerald-500/20"
+                              )}
+                            >
+                              {tx.type === "expense" ? "รายจ่าย" : "รายรับ"}
+                            </span>
+                          </td>
+                          <td className="p-3.5 text-right font-bold text-slate-100">
+                            <span className={tx.type === "expense" ? "text-rose-400" : "text-emerald-400"}>
+                              {tx.type === "expense" ? "-" : "+"}฿{formatBaht(tx.amount)}
+                            </span>
+                          </td>
+                          <td className="p-3.5 text-center">
+                            <button
+                              onClick={() => handleDeleteTx(tx.id)}
+                              className="rounded-lg p-1 text-slate-500 hover:bg-rose-950/50 hover:text-rose-400"
+                              title="ลบรายการ"
+                            >
+                              <Trash2 size={14} />
+                            </button>
+                          </td>
+                        </tr>
+                      ))
                     )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* TAB 3: Budget & Salary Planner */}
+        {tab === "budgets" && (
+          <div className="space-y-6">
+            <div>
+              <h2 className="text-lg font-bold text-white">💼 กำหนดงบประมาณและเงินเดือนให้ผู้ใช้</h2>
+              <p className="text-xs text-slate-400">
+                ตัวเลขที่กำหนดที่นี่จะถูกบันทึกลงฐานข้อมูลและส่งไปแสดงผลที่หน้าบ้าน (Expense Tracking App)
+              </p>
+            </div>
+
+            <form onSubmit={handleSaveBudget} className="space-y-6">
+              {/* Top Monthly Salary & Daily Budget */}
+              <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+                <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-5 shadow-lg space-y-2">
+                  <div className="flex items-center gap-2 text-emerald-400">
+                    <Wallet size={18} />
+                    <label className="text-xs font-bold uppercase tracking-wider">เงินเดือน / งบประจำเดือน</label>
+                  </div>
+                  <input
+                    type="number"
+                    step="any"
+                    value={budgetMonthlySalary}
+                    onChange={(e) => setBudgetMonthlySalary(e.target.value)}
+                    placeholder="15000"
+                    className="w-full rounded-xl border border-slate-800 bg-slate-950 py-2.5 px-3 text-lg font-bold text-white outline-none focus:border-emerald-500"
+                    required
+                  />
+                  <span className="text-[11px] text-slate-500">บันทึกลง salaries & defaultSalary</span>
+                </div>
+
+                <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-5 shadow-lg space-y-2">
+                  <div className="flex items-center gap-2 text-amber-400">
+                    <Sun size={18} />
+                    <label className="text-xs font-bold uppercase tracking-wider">งบประมาณรายวัน (Daily Budget)</label>
+                  </div>
+                  <div className="flex gap-2">
+                    <input
+                      type="number"
+                      step="any"
+                      value={budgetDaily}
+                      onChange={(e) => setBudgetDaily(e.target.value)}
+                      placeholder="500"
+                      className="flex-1 rounded-xl border border-slate-800 bg-slate-950 py-2.5 px-3 text-lg font-bold text-white outline-none focus:border-emerald-500"
+                      required
+                    />
+                    <input
+                      type="date"
+                      value={budgetDailyDate}
+                      onChange={(e) => setBudgetDailyDate(e.target.value)}
+                      className="w-32 rounded-xl border border-slate-800 bg-slate-950 px-2 text-xs text-slate-200 outline-none"
+                    />
+                  </div>
+                  <span className="text-[11px] text-slate-500">บันทึกลง daily_budgets สำหรับวันที่เลือก</span>
+                </div>
+
+                <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-5 shadow-lg flex flex-col justify-between">
+                  <div>
+                    <label className="text-xs font-bold uppercase tracking-wider text-slate-400">เดือนที่จัดสรร</label>
+                    <input
+                      type="month"
+                      value={selectedYm}
+                      onChange={(e) => setSelectedYm(e.target.value)}
+                      className="mt-2 w-full rounded-xl border border-slate-800 bg-slate-950 py-2.5 px-3 text-sm font-semibold text-white outline-none"
+                    />
+                  </div>
+                  <p className="text-[11px] text-slate-500 mt-2">
+                    เลือกเดือนเพื่อจัดสรรซองงบสัปดาห์ 5 สัปดาห์
+                  </p>
+                </div>
+              </div>
+
+              {/* Weekly Envelopes */}
+              <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-5 shadow-lg space-y-4">
+                <div className="flex items-center gap-2 text-indigo-400">
+                  <Calendar size={18} />
+                  <h3 className="text-sm font-bold">ซองงบประมาณรายสัปดาห์ (Weekly Envelopes)</h3>
+                </div>
+
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-5">
+                  {envelopes.map((env, idx) => (
+                    <div key={env.weekIndex} className="rounded-xl border border-slate-800 bg-slate-950 p-3.5 space-y-2">
+                      <span className="text-xs font-semibold text-slate-300 block">{env.label}</span>
+                      <div className="relative">
+                        <span className="absolute left-3 top-1/2 -translate-y-1/2 text-xs text-slate-500">฿</span>
+                        <input
+                          type="number"
+                          step="any"
+                          value={env.budgetAmount}
+                          onChange={(e) => {
+                            const val = parseFloat(e.target.value) || 0;
+                            setEnvelopes((prev) =>
+                              prev.map((item, i) => (i === idx ? { ...item, budgetAmount: val } : item))
+                            );
+                          }}
+                          className="w-full rounded-lg border border-slate-800 bg-slate-900 py-1.5 pl-7 pr-2 text-sm font-bold text-white outline-none focus:border-indigo-500"
+                        />
+                      </div>
+                      <span className="text-[10px] text-slate-500 block">
+                        {env.startDate} ถึง {env.endDate}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Submit Button */}
+              <div className="flex justify-end">
+                <button
+                  type="submit"
+                  disabled={savingBudget}
+                  className="flex items-center gap-2 rounded-xl bg-emerald-600 px-6 py-3 text-sm font-bold text-white shadow-lg shadow-emerald-600/30 hover:bg-emerald-500 disabled:opacity-50"
+                >
+                  {savingBudget ? (
+                    <>
+                      <Loader2 size={16} className="animate-spin" />
+                      <span>กำลังบันทึกงบประมาณ...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Sparkles size={16} />
+                      <span>บันทึกการตั้งค่างบประมาณ</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </form>
+          </div>
+        )}
+
+        {/* TAB 4: Category Management */}
+        {tab === "categories" && (
+          <div className="space-y-6">
+            <div>
+              <h2 className="text-lg font-bold text-white">🏷️ จัดการหมวดหมู่ค่าใช้จ่าย</h2>
+              <p className="text-xs text-slate-400">กำหนดหมวดหมู่และไอคอนที่จะให้ผู้ใช้เลือกในแอปหน้าบ้าน</p>
+            </div>
+
+            {/* Add Category Form */}
+            <form onSubmit={handleAddCategory} className="rounded-2xl border border-slate-800 bg-slate-900/60 p-5 shadow-lg space-y-4">
+              <h3 className="text-sm font-bold text-white">เพิ่มหมวดหมู่ใหม่</h3>
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-4">
+                <div>
+                  <label className="block text-xs font-medium text-slate-300 mb-1">ชื่อหมวดหมู่</label>
+                  <input
+                    type="text"
+                    value={newCatName}
+                    onChange={(e) => setNewCatName(e.target.value)}
+                    placeholder="เช่น กาแฟ, ท่องเที่ยว"
+                    className="w-full rounded-xl border border-slate-800 bg-slate-950 py-2 px-3 text-xs text-white outline-none focus:border-emerald-500"
+                    required
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-medium text-slate-300 mb-1">ไอคอน Emoji</label>
+                  <div className="flex gap-1.5 items-center">
+                    <input
+                      type="text"
+                      value={newCatIcon}
+                      onChange={(e) => setNewCatIcon(e.target.value)}
+                      className="w-16 rounded-xl border border-slate-800 bg-slate-950 py-2 text-center text-base text-white outline-none"
+                    />
+                    <div className="flex gap-1 overflow-x-auto max-w-[150px]">
+                      {PRESET_EMOJIS.slice(0, 5).map((em) => (
+                        <button
+                          key={em}
+                          type="button"
+                          onClick={() => setNewCatIcon(em)}
+                          className="rounded-lg bg-slate-950 p-1 text-sm hover:bg-slate-800"
+                        >
+                          {em}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-medium text-slate-300 mb-1">ประเภท</label>
+                  <select
+                    value={newCatType}
+                    onChange={(e: any) => setNewCatType(e.target.value)}
+                    className="w-full rounded-xl border border-slate-800 bg-slate-950 py-2 px-3 text-xs text-white outline-none"
                   >
-                    <Power size={11} /> {m.isActive ? "เปิดระบบ" : "ปิดระบบ"}
+                    <option value="expense">รายจ่าย (Expense)</option>
+                    <option value="income">รายรับ (Income)</option>
+                    <option value="both">ทั้งสองประเภท</option>
+                  </select>
+                </div>
+
+                <div className="flex items-end">
+                  <button
+                    type="submit"
+                    className="flex w-full items-center justify-center gap-1.5 rounded-xl bg-emerald-600 py-2 text-xs font-bold text-white hover:bg-emerald-500 shadow-md shadow-emerald-600/20"
+                  >
+                    <Plus size={16} />
+                    <span>เพิ่มหมวดหมู่</span>
                   </button>
                 </div>
               </div>
-            ))}
-          </div>
-        </div>
-      )}
+            </form>
 
-      {/* Push Notification Tester Panel */}
-      {tab === "push" && (
-        <div className="card space-y-4 p-5 border-indigo-500/30 bg-gradient-to-br from-indigo-900/20 via-surface to-surface pop-in">
-          <div className="flex items-center gap-2 border-b border-border/80 pb-3">
-            <Bell className="text-indigo-400" size={20} />
-            <div>
-              <h3 className="text-sm font-bold text-foreground">
-                ทดสอบยิงการแจ้งเตือน (Admin Web Push Notification Tester)
-              </h3>
-              <p className="text-[11px] text-muted">
-                เลือกสมาชิกที่ต้องการทดสอบเพื่อยิงข้อความแจ้งเตือนเด้งบน Lock Screen / หน้าจอมือถือ
-              </p>
+            {/* Existing Categories List */}
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-6">
+              {categories.map((cat) => (
+                <div
+                  key={cat.id}
+                  className="flex items-center justify-between rounded-xl border border-slate-800 bg-slate-900/60 p-3 shadow-md"
+                >
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className="text-xl">{cat.icon}</span>
+                    <span className="text-xs font-semibold text-slate-200 truncate">{cat.name}</span>
+                  </div>
+                </div>
+              ))}
             </div>
           </div>
+        )}
 
-          <form onSubmit={handleSendAdminPush} className="space-y-4">
+        {/* TAB 5: Users List */}
+        {tab === "users" && (
+          <div className="space-y-4">
             <div>
-              <label className="text-[11px] font-semibold text-muted">
-                เลือกสมาชิกผู้รับ (Select Target User)
-              </label>
-              <select
-                value={pushTargetUserId}
-                onChange={(e) => setPushTargetUserId(e.target.value)}
-                className="mt-1 w-full rounded-xl border border-border bg-surface-2 px-3.5 py-2.5 text-xs font-semibold text-foreground outline-none focus:border-indigo-500"
-              >
-                <option value="">-- เลือกสมาชิกในระบบ ({users.length} คน) --</option>
-                {users.map((u) => (
-                  <option key={u.id} value={u.id}>
-                    👤 {u.email} ({u.id.slice(0, 8)}...)
-                  </option>
-                ))}
-              </select>
+              <h2 className="text-lg font-bold text-white">👥 ผู้ใช้งานในระบบ ({users.length})</h2>
+              <p className="text-xs text-slate-400">รายชื่อผู้ใช้ที่ลงทะเบียนใน Supabase</p>
             </div>
 
-            <div>
-              <label className="text-[11px] font-semibold text-muted">
-                หัวข้อการแจ้งเตือน (Notification Title)
-              </label>
-              <input
-                type="text"
-                value={pushTitle}
-                onChange={(e) => setPushTitle(e.target.value)}
-                placeholder="🔔 แจ้งเตือนทดสอบระบบ Admin"
-                className="mt-1 w-full rounded-xl border border-border bg-surface-2 px-3.5 py-2.5 text-xs text-foreground outline-none focus:border-indigo-500 font-medium"
-              />
+            <div className="rounded-2xl border border-slate-800 bg-slate-900/60 overflow-hidden shadow-xl">
+              <table className="w-full text-left text-xs text-slate-300">
+                <thead className="bg-slate-950 border-b border-slate-800 text-[11px] uppercase tracking-wider text-slate-400">
+                  <tr>
+                    <th className="p-3.5">ผู้ใช้ / อีเมล</th>
+                    <th className="p-3.5">User ID</th>
+                    <th className="p-3.5">วันที่สมัคร</th>
+                    <th className="p-3.5 text-center">จัดการ</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-800/60">
+                  {users.map((u) => (
+                    <tr key={u.id} className="hover:bg-slate-800/30 transition-colors">
+                      <td className="p-3.5 font-semibold text-white">👤 {u.email}</td>
+                      <td className="p-3.5 font-mono text-[11px] text-slate-400">{u.id}</td>
+                      <td className="p-3.5 text-slate-400">{u.createdAt ? formatDayTH(u.createdAt.slice(0, 10)) : "-"}</td>
+                      <td className="p-3.5 text-center">
+                        <button
+                          onClick={() => {
+                            setSelectedUser(u);
+                            setTab("budgets");
+                          }}
+                          className="rounded-lg bg-emerald-950/60 border border-emerald-500/30 px-2.5 py-1 text-[11px] font-bold text-emerald-400 hover:bg-emerald-900/50"
+                        >
+                          ตั้งค่างบประมาณ
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
+          </div>
+        )}
 
-            <div>
-              <label className="text-[11px] font-semibold text-muted">
-                เนื้อหาข้อความ (Notification Message)
-              </label>
-              <textarea
-                rows={3}
-                value={pushBody}
-                onChange={(e) => setPushBody(e.target.value)}
-                placeholder="สวัสดีครับ! นี่คือข้อความยิงทดสอบระบบ Push Notification เข้ามือถือ"
-                className="mt-1 w-full rounded-xl border border-border bg-surface-2 px-3.5 py-2.5 text-xs text-foreground outline-none focus:border-indigo-500 font-medium leading-relaxed"
-              />
+        {/* TAB 6: Push Notification Testing */}
+        {tab === "push" && (
+          <div className="max-w-xl mx-auto rounded-2xl border border-slate-800 bg-slate-900/60 p-6 shadow-xl space-y-4">
+            <div className="flex items-center gap-2 text-emerald-400">
+              <Bell size={20} />
+              <h2 className="text-base font-bold text-white">แผงทดสอบยิงสัญญาณ Push Notification</h2>
             </div>
+            <p className="text-xs text-slate-400">
+              ทดสอบส่งสัญญาณ Web Push แจ้งเตือนไปยังหน้าจอล็อกสกรีนของมือถือผู้ใช้
+            </p>
 
             {pushResultMsg && (
               <div
                 className={clsx(
-                  "p-3.5 rounded-xl border text-xs font-medium flex items-center gap-2",
+                  "rounded-xl p-3 text-xs",
                   pushResultMsg.success
-                    ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-400"
-                    : "bg-rose-500/10 border-rose-500/30 text-rose-400",
+                    ? "bg-emerald-950/40 text-emerald-300 border border-emerald-500/30"
+                    : "bg-rose-950/40 text-rose-300 border border-rose-500/30"
                 )}
               >
-                <Sparkles size={16} />
-                <span>{pushResultMsg.text}</span>
+                {pushResultMsg.text}
               </div>
             )}
 
-            <button
-              type="submit"
-              disabled={pushSending || !pushTargetUserId}
-              className="flex w-full items-center justify-center gap-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 px-4 py-3 text-xs font-bold text-white shadow-lg shadow-indigo-600/30 transition active:scale-95 disabled:opacity-50"
-            >
-              <Send size={15} />
-              <span>{pushSending ? "กำลังยิงสัญญาณ Push..." : "🚀 ยิง Push Notification เข้าเครื่องผู้ใช้"}</span>
-            </button>
-          </form>
-        </div>
-      )}
+            <div className="space-y-3 pt-2">
+              <div>
+                <label className="block text-xs font-medium text-slate-300 mb-1">เป้าหมายผู้ใช้</label>
+                <select
+                  value={pushTargetUserId}
+                  onChange={(e) => setPushTargetUserId(e.target.value)}
+                  className="w-full rounded-xl border border-slate-800 bg-slate-950 py-2.5 px-3 text-xs text-white outline-none"
+                >
+                  {users.map((u) => (
+                    <option key={u.id} value={u.id}>
+                      {u.email}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-slate-300 mb-1">หัวข้อแจ้งเตือน</label>
+                <input
+                  type="text"
+                  value={pushTitle}
+                  onChange={(e) => setPushTitle(e.target.value)}
+                  className="w-full rounded-xl border border-slate-800 bg-slate-950 py-2 px-3 text-xs text-white outline-none"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-slate-300 mb-1">ข้อความแจ้งเตือน</label>
+                <textarea
+                  rows={3}
+                  value={pushBody}
+                  onChange={(e) => setPushBody(e.target.value)}
+                  className="w-full rounded-xl border border-slate-800 bg-slate-950 py-2 px-3 text-xs text-white outline-none"
+                />
+              </div>
+
+              <button
+                onClick={async () => {
+                  if (!pushTargetUserId) return;
+                  setPushSending(true);
+                  setPushResultMsg(null);
+                  try {
+                    const res = await fetch("/api/admin/push/send", {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({
+                        userId: pushTargetUserId,
+                        title: pushTitle.trim(),
+                        body: pushBody.trim(),
+                      }),
+                    });
+                    const data = await res.json();
+                    if (res.ok && data.success) {
+                      setPushResultMsg({
+                        success: true,
+                        text: `ยิงสัญญาณสำเร็จ! (${data.pushResult?.sentCount || 0} อุปกรณ์ได้รับสัญญาณ)`,
+                      });
+                    } else {
+                      setPushResultMsg({ success: false, text: data.error || "ยิงสัญญาณไม่สำเร็จ" });
+                    }
+                  } catch (err: any) {
+                    setPushResultMsg({ success: false, text: err.message || "เกิดข้อผิดพลาด" });
+                  } finally {
+                    setPushSending(false);
+                  }
+                }}
+                disabled={pushSending}
+                className="flex w-full items-center justify-center gap-2 rounded-xl bg-emerald-600 py-2.5 text-xs font-bold text-white hover:bg-emerald-500 shadow-lg shadow-emerald-600/30 disabled:opacity-50"
+              >
+                {pushSending ? <Loader2 size={16} className="animate-spin" /> : <Send size={16} />}
+                <span>ยิงสัญญาณ Push เข้ามือถือ</span>
+              </button>
+            </div>
+          </div>
+        )}
+      </main>
     </div>
   );
 }

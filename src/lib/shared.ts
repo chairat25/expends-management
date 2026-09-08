@@ -144,3 +144,43 @@ export function formatBaht(n: number): string {
 
 export const BUDGET_MODES = ["month", "week"] as const;
 export type BudgetMode = (typeof BUDGET_MODES)[number];
+
+export type MonthWeekInfo = {
+  weekIndex: number;
+  startDate: string;
+  endDate: string;
+  label: string;
+  days: number;
+};
+
+export function getMonthWeeks(ym: string): MonthWeekInfo[] {
+  const [y, m] = ym.split("-").map(Number);
+  const totalDays = daysInMonth(ym);
+  const weeks: MonthWeekInfo[] = [];
+
+  let curDay = 1;
+  let weekIndex = 1;
+
+  while (curDay <= totalDays) {
+    const startDate = `${ym}-${String(curDay).padStart(2, "0")}`;
+    const dt = new Date(y, m - 1, curDay);
+    const dow = dt.getDay(); // 0=Sun
+    const daysUntilSunday = dow === 0 ? 0 : 7 - dow;
+    const endDayNum = Math.min(curDay + daysUntilSunday, totalDays);
+    const endDate = `${ym}-${String(endDayNum).padStart(2, "0")}`;
+
+    const numDays = endDayNum - curDay + 1;
+    weeks.push({
+      weekIndex,
+      startDate,
+      endDate,
+      label: `สัปดาห์ที่ ${weekIndex} (${curDay} - ${endDayNum} ${TH_MONTHS_SHORT[m - 1]})`,
+      days: numDays,
+    });
+
+    curDay = endDayNum + 1;
+    weekIndex++;
+  }
+
+  return weeks;
+}

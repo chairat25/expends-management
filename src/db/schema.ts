@@ -74,6 +74,8 @@ export const userSettings = pgTable("user_settings", {
   defaultSalary: numeric("default_salary", { precision: 12, scale: 2 })
     .notNull()
     .default("0"),
+  weeklyResetDate: text("weekly_reset_date"),
+  showCommunity: boolean("show_community").notNull().default(true),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
@@ -110,6 +112,41 @@ export const salaries = pgTable(
   },
   (t) => [uniqueIndex("salaries_user_ym_uq").on(t.userId, t.ym)],
 );
+
+export const weeklyEnvelopes = pgTable(
+  "weekly_envelopes",
+  {
+    id: serial("id").primaryKey(),
+    userId: uuid("user_id").notNull(),
+    ym: text("ym").notNull(),
+    weekIndex: integer("week_index").notNull(),
+    startDate: date("start_date").notNull(),
+    endDate: date("end_date").notNull(),
+    budgetAmount: numeric("budget_amount", { precision: 12, scale: 2 })
+      .notNull()
+      .default("0"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("weekly_envelopes_user_ym_week_uq").on(
+      t.userId,
+      t.ym,
+      t.weekIndex,
+    ),
+  ],
+);
+
+export const userProfiles = pgTable("user_profiles", {
+  userId: uuid("user_id").primaryKey(),
+  displayName: text("display_name").notNull().default(""),
+  avatarUrl: text("avatar_url").notNull().default(""),
+  bio: text("bio").notNull().default(""),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
 
 export const appCategories = pgTable("app_categories", {
   id: serial("id").primaryKey(),
@@ -182,7 +219,8 @@ export type SavingsTransaction = typeof savingsTransactions.$inferSelect;
 export type UserSettings = typeof userSettings.$inferSelect;
 export type DailyBudget = typeof dailyBudgets.$inferSelect;
 export type Salary = typeof salaries.$inferSelect;
+export type WeeklyEnvelope = typeof weeklyEnvelopes.$inferSelect;
+export type UserProfile = typeof userProfiles.$inferSelect;
 export type AppCategory = typeof appCategories.$inferSelect;
 export type AppMenu = typeof appMenus.$inferSelect;
 export type UserMenuPreference = typeof userMenuPreferences.$inferSelect;
-
